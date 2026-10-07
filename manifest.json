@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SynthID Check",
   "version": "0.1.0",
-  "description": "Right-click an image, video or audio element to check it for a SynthID watermark on synthid.com.",
+  "description": "Drag an image onto the drop box, or right-click any image, video or audio, to check it for a SynthID watermark on synthid.com.",
   "icons": {
     "48": "icons/icon.svg",
     "96": "icons/icon.svg"
@@ -53,7 +53,8 @@
     }
   },
   "options_ui": {
-    "page": "src/options/options.html"
+    "page": "src/options/options.html",
+    "open_in_tab": true
   },
   "browser_specific_settings": {
     "gecko": {

@@ -1,6 +1,20 @@
 "use strict";
 
 const pickButton = document.getElementById("pick");
+
+// Describe drag and drop as currently set up.
+const CORNERS = ["top-right", "bottom-right", "top-left", "bottom-left"];
+browser.storage.sync.get({ dropZone: true, dropZoneCorner: "top-right" }).then(
+  (s) => {
+    const on = s.dropZone !== false;
+    document.getElementById("way-drag").hidden = !on;
+    document.getElementById("way-drag-off").hidden = on;
+    document.getElementById("corner").textContent = CORNERS.includes(s.dropZoneCorner)
+      ? s.dropZoneCorner
+      : "top-right";
+  },
+  (e) => console.warn("SynthID Check: couldn't read the settings", e),
+);
 const note = document.getElementById("note");
 
 // Access to all websites is granted at install but the user can revoke it.

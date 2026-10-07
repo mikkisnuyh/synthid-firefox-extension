@@ -59,7 +59,7 @@ const POPUP_PAGE = "src/popup/popup.html";
 const OPTIONS_PAGE = "src/options/options.html";
 const ALL_SITES = "<all_urls>";
 const WORKING_NOTICE_DELAY_MS = 800;
-const DEFAULT_SETTINGS = { openInForeground: true, dropZone: true };
+const DEFAULT_SETTINGS = { openInForeground: true, dropZone: true, dropZoneCorner: "top-right" };
 
 const TEXT = {
   title: "SynthID Check",
@@ -70,8 +70,7 @@ const TEXT = {
     "SynthID can check JPG, PNG, WebP, GIF, AVIF, HEIC, TIFF, BMP images, MP3/WAV/OGG/FLAC/AAC/M4A audio " +
     `and MP4/MOV/WebM video. This file is ${what}.`,
   siteAccess:
-    "SynthID Check needs access to websites to download this file. " +
-    "Allow it in the extension's settings (about:addons → SynthID Check → Permissions).",
+    "SynthID Check needs access to websites to download this file. Turn it back on in SynthID Check's settings.",
   fetchFailed: (status) =>
     `Couldn't download the file (${status}). Try saving it and uploading it on synthid.com.`,
   tooLarge: (mb) => `This file is larger than ${mb} MB. Try a smaller file.`,
@@ -81,15 +80,18 @@ const TEXT = {
   blobFailed: "Couldn't read this file from the page. Try saving it and uploading it on synthid.com.",
   working: "Getting the file…",
   synthidAccess:
-    "SynthID Check needs access to synthid.com to attach the file. " +
-    "Re-enable it in the extension's settings (about:addons → SynthID Check → Permissions).",
+    "SynthID Check needs access to synthid.com to attach the file. Turn it back on in SynthID Check's settings.",
 };
 const SYNTHID_ORIGIN_PATTERN = "https://synthid.com/*";
 
+// A notice button that opens the extension's settings page.
+const OPEN_SETTINGS = [{ id: "open-settings", label: "Open settings", primary: true }];
+
 class Notice extends Error {
-  constructor(message, state = "error") {
+  constructor(message, state = "error", actions = []) {
     super(message);
     this.state = state;
+    this.actions = actions;
   }
 }
 
@@ -204,7 +206,17 @@ async function showNotice(tabId, notice) {
       target: { tabId },
       injectImmediately: true,
       func: (n) => {
+        // synthid.js owns the banner's action handler on synthid.com.
+        const ownHandler = location.origin !== "https://synthid.com";
+        if (!ownHandler) n = { ...n, actions: [] };
         SynthIDBanner.show(n);
+        if (ownHandler && n.actions.length) {
+          SynthIDBanner.onAction((id) => {
+            if (id !== "open-settings") return;
+            SynthIDBanner.hide();
+            browser.runtime.sendMessage({ type: "synthid:openSettings" }).catch(() => {});
+          });
+        }
       },
       args: [{ title: TEXT.title, actions: [], ...notice }],
     });
@@ -436,7 +448,7 @@ async function acquire(media, ctx) {
   } catch (e) {
     finished = true;
     if (e instanceof Notice) {
-      notify(tabId, { state: e.state, message: e.message });
+      notify(tabId, { state: e.state, message: e.message, actions: e.actions });
     } else {
       console.error("SynthID Check:", e);
       notify(tabId, { state: "error", message: TEXT.fetchFailed("error") });
@@ -501,7 +513,7 @@ async function getFile(media, ctx) {
   }
 
   if (granted) throw new Notice(TEXT.fetchFailed("network error"));
-  throw new Notice(TEXT.siteAccess, "warn");
+  throw new Notice(TEXT.siteAccess, "warn", OPEN_SETTINGS);
 }
 
 async function fetchInBackground(url) {
@@ -640,14 +652,14 @@ async function createTabNear(sourceTab, props) {
 
 function openSynthId(file, sourceUrl, sourceTab) {
   const run = (async () => {
-    // The content script's host permission can be revoked in about:addons.
+    // The content script's host permission can be revoked in Firefox's add-ons manager.
     let hasAccess = false;
     try {
       hasAccess = await browser.permissions.contains({ origins: [SYNTHID_ORIGIN_PATTERN] });
     } catch {
       hasAccess = false;
     }
-    if (!hasAccess) throw new Notice(TEXT.synthidAccess, "warn");
+    if (!hasAccess) throw new Notice(TEXT.synthidAccess, "warn", OPEN_SETTINGS);
 
     const settings = await getSettings();
     const newTab = await createTabNear(sourceTab, {
@@ -769,6 +781,13 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     case "synthid:syncDropZone":
       if (!isFromOptions(sender)) return Promise.resolve({ ok: false });
       return syncDropZone().then(() => ({ ok: true }));
+
+    // The "Open settings" button on a notice.
+    case "synthid:openSettings":
+      return browser.runtime.openOptionsPage().then(
+        () => ({ ok: true }),
+        () => ({ ok: false }),
+      );
 
     case "synthid:startPicker":
       if (!isFromPopup(sender)) return Promise.resolve({ ok: false });

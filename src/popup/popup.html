@@ -12,13 +12,20 @@
     <h1>SynthID Check</h1>
   </header>
 
+  <ul class="ways">
+    <li id="way-drag">
+      <strong>Drag</strong> an image and drop it on the box that appears in the
+      <span id="corner">top-right</span> corner.
+    </li>
+    <li id="way-drag-off" hidden>
+      <strong>Drag and drop</strong> is turned off. You can turn it on in the settings.
+    </li>
+    <li><strong>Right-click</strong> any image, video or audio and choose <em>Check with SynthID</em>.</li>
+    <li><strong>Pick</strong> media on this page and click the one to check:</li>
+  </ul>
+
   <button type="button" id="pick" class="primary wide">Pick media on this page</button>
   <p id="note" class="status" role="status" hidden>Pick mode isn't available on this page.</p>
-
-  <p class="muted hint">
-    You can also right-click any image, video or audio and choose
-    <strong>Check with SynthID</strong>.
-  </p>
 
   <div class="secondary">
     <button type="button" id="open-site" class="link">Open synthid.com</button>

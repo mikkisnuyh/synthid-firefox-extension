@@ -15,6 +15,9 @@
   const HTML_NS = "http://www.w3.org/1999/xhtml";
   const NATIVE_IMAGE = "application/x-moz-nativeimage";
   const CHECKABLE_URL = /^(https?|data|blob):/i;
+  const IMAGE_TAGS = ["img", "picture", "image"];
+  const CORNERS = ["top-right", "bottom-right", "top-left", "bottom-left"];
+  const DEFAULT_CORNER = "top-right";
   const ZONE_WIDTH = 240;
   const ZONE_HEIGHT = 132;
   const MARGIN = 16;
@@ -67,6 +70,30 @@
   let generation = 0;
   let showTimer = null;
   let probe = null;
+  // Where the last trusted mousedown was: a drag starts there.
+  let downPoint = null;
+  // The corner setting, read once and dropped when it changes.
+  let cornerSetting = null;
+
+  function getCorner() {
+    if (!cornerSetting) {
+      try {
+        cornerSetting = browser.storage.sync.get({ dropZoneCorner: DEFAULT_CORNER }).then(
+          (s) => (CORNERS.includes(s.dropZoneCorner) ? s.dropZoneCorner : DEFAULT_CORNER),
+          () => DEFAULT_CORNER,
+        );
+      } catch (e) {
+        cornerSetting = Promise.resolve(DEFAULT_CORNER);
+      }
+    }
+    return cornerSetting;
+  }
+
+  try {
+    browser.storage.onChanged.addListener((changes, area) => {
+      if (area === "sync" && changes && "dropZoneCorner" in changes) cornerSetting = null;
+    });
+  } catch (e) {}
 
   function ensure() {
     if (host && zone) return true;
@@ -191,31 +218,41 @@
     }
   }
 
-  // Top-right of the area, or top-left when the drag started where the zone would appear.
-  function place(area, point) {
+  // The zone's box in the given corner of the area, in viewport coordinates.
+  function boxIn(area, corner) {
     const width = Math.min(ZONE_WIDTH, area.right - area.left - 2 * MARGIN);
-    const top = area.top + MARGIN;
-    const rightLeft = area.right - MARGIN - width;
-    const underPointer =
-      point.x >= rightLeft && point.x <= area.right - MARGIN && point.y >= top && point.y <= top + ZONE_HEIGHT;
-    const s = zone.style;
-    s.width = width + "px";
-    s.top = top + "px";
-    s.bottom = "auto";
-    if (underPointer) {
-      s.left = area.left + MARGIN + "px";
-      s.right = "auto";
-    } else {
-      s.left = "auto";
-      s.right = viewport().right - area.right + MARGIN + "px";
-    }
+    const left = corner.endsWith("left") ? area.left + MARGIN : area.right - MARGIN - width;
+    const top = corner.startsWith("top") ? area.top + MARGIN : area.bottom - MARGIN - ZONE_HEIGHT;
+    return { left, top, width };
   }
 
-  function show(area, point) {
+  // The chosen corner of the area, or the other corner on the same side when the drag
+  // started where the zone would appear.
+  function place(area, point, corner) {
+    let box = boxIn(area, corner);
+    const underPointer =
+      point &&
+      point.x >= box.left &&
+      point.x <= box.left + box.width &&
+      point.y >= box.top &&
+      point.y <= box.top + ZONE_HEIGHT;
+    if (underPointer) {
+      const side = corner.endsWith("left") ? "left" : "right";
+      box = boxIn(area, (corner.startsWith("top") ? "bottom-" : "top-") + side);
+    }
+    const s = zone.style;
+    s.width = box.width + "px";
+    s.left = box.left + "px";
+    s.top = box.top + "px";
+    s.right = "auto";
+    s.bottom = "auto";
+  }
+
+  function show(area, point, corner) {
     if (!ensure()) return false;
     try {
       zone.classList.remove("over");
-      place(area, point);
+      place(area, point, corner);
       const parent = container();
       if (host.parentNode !== parent) parent.appendChild(host);
       // The top layer keeps the zone above the page's own dialogs and fullscreen elements.
@@ -245,8 +282,35 @@
     host.remove();
   }
 
+  function isImageElement(el) {
+    return !!(el && el.nodeType === 1 && IMAGE_TAGS.includes(el.localName));
+  }
+
+  // Where the drag started. Falls back to the mousedown point in case the event has no coordinates.
+  function dragPoint(e) {
+    if (e.clientX || e.clientY || !downPoint) return { x: e.clientX, y: e.clientY };
+    return downPoint;
+  }
+
+  // An image dragged by a link (or another draggable element) around it. The link is the
+  // dragstart target then, not the image.
+  function imageInside(target, e, point) {
+    const resolve = globalThis.SynthIDResolve;
+    const types = e.dataTransfer ? Array.from(e.dataTransfer.types || []) : [];
+    // Firefox marks image drags with this type; then whatever is under the pointer is the image.
+    const markedImage = types.includes(NATIVE_IMAGE);
+    const under = resolve.fromPoint(point.x, point.y);
+    if (under && (markedImage || (isImageElement(under.element) && target.contains(under.element)))) return under;
+    // A link that is just an image (a logo, an avatar), in case the type isn't exposed.
+    if (markedImage || !(target.textContent || "").trim()) {
+      const imgs = target.querySelectorAll("img");
+      if (imgs.length === 1) return resolve.fromElement(imgs[0]);
+    }
+    return null;
+  }
+
   // The image under a drag, or null when something else (text, a plain link) is dragged.
-  function mediaForDrag(e) {
+  function mediaForDrag(e, point) {
     const resolve = globalThis.SynthIDResolve;
     if (typeof resolve?.fromElement !== "function") return null;
     let hit = null;
@@ -254,14 +318,8 @@
       // composedPath reaches an image inside the page's own (open) shadow roots.
       const path = typeof e.composedPath === "function" ? e.composedPath() : [];
       const target = path[0] && path[0].nodeType === 1 ? path[0] : e.target;
-      const tag = target && target.nodeType === 1 ? target.localName : "";
-      if (tag === "img" || tag === "picture" || tag === "image") {
-        hit = resolve.fromElement(target);
-      } else {
-        // An image inside a link drags as the link; Firefox marks image drags with this type.
-        const types = e.dataTransfer ? Array.from(e.dataTransfer.types || []) : [];
-        if (types.includes(NATIVE_IMAGE)) hit = resolve.fromPoint(e.clientX, e.clientY);
-      }
+      if (!target || target.nodeType !== 1) return null;
+      hit = isImageElement(target) ? resolve.fromElement(target) : imageInside(target, e, point);
     } catch (err) {
       return null;
     }
@@ -273,18 +331,21 @@
     // Pages can dispatch synthetic drag events; only a real drag may show the zone.
     if (!e.isTrusted) return;
     hide();
-    const media = mediaForDrag(e);
+    const point = dragPoint(e);
+    const media = mediaForDrag(e, point);
     if (!media) return;
     const gen = generation;
-    const point = { x: e.clientX, y: e.clientY };
     // Show after the page's own dragstart handlers ran: if one cancelled the drag, no drag
     // (and no dragend to hide the zone) follows.
     showTimer = setTimeout(() => {
       showTimer = null;
       if (gen !== generation || e.defaultPrevented) return;
-      visibleArea((area) => {
-        if (gen !== generation || !area) return;
-        if (show(area, point)) dragged = media;
+      getCorner().then((corner) => {
+        if (gen !== generation) return;
+        visibleArea((area) => {
+          if (gen !== generation || !area) return;
+          if (show(area, point, corner)) dragged = media;
+        });
       });
     }, 0);
   }
@@ -342,7 +403,12 @@
   // dragend from us. No mouse events reach the page during a drag; a release or a move with no
   // button down means it's over.
   function onMouse(e) {
-    if (!dragged || !e.isTrusted) return;
+    if (!e.isTrusted) return;
+    if (e.type === "mousedown") {
+      downPoint = { x: e.clientX, y: e.clientY };
+      return;
+    }
+    if (!dragged) return;
     if (e.type === "mouseup" || e.buttons === 0) hide();
   }
 
@@ -352,6 +418,7 @@
   window.addEventListener("dragleave", onDragLeave, true);
   window.addEventListener("drop", onDrop, true);
   window.addEventListener("dragend", onDragEndOrPageHide, true);
+  window.addEventListener("mousedown", onMouse, true);
   window.addEventListener("mousemove", onMouse, true);
   window.addEventListener("mouseup", onMouse, true);
   window.addEventListener("pagehide", onDragEndOrPageHide, true);

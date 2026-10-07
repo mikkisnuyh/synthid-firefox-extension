@@ -93,3 +93,42 @@ kbd {
   border-radius: 4px;
   background: var(--card);
 }
+
+/* Settings page (opened in its own tab). Scoped so the popup, which shares this file, is unaffected. */
+.page-options main { margin: 0 auto; padding: 40px 16px 64px; }
+
+.page-options .field { display: flex; gap: 0.6rem; align-items: center; margin: 0.75rem 0; }
+.page-options .field.disabled { opacity: 0.5; }
+
+.page-options select {
+  font: inherit;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--button);
+  color: var(--fg);
+}
+.page-options select:hover:not(:disabled) { background: var(--button-hover); }
+.page-options select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.page-options select:disabled { cursor: default; }
+
+.page-options .shortcuts { list-style: none; margin: 0; padding: 0; }
+.page-options .shortcut-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+}
+.page-options .shortcut-row + .shortcut-row { margin-top: 0.5rem; }
+.page-options .shortcut-row.recording { border-color: var(--accent); outline: 1px solid var(--accent); }
+.page-options .shortcut-name { font-weight: 600; flex: 1 1 14rem; }
+.page-options .shortcut-keys { flex: 0 1 auto; min-width: 8rem; }
+.page-options .shortcut-keys kbd + kbd { margin-left: 0.25rem; }
+.page-options .shortcut-actions { display: flex; gap: 0.4rem; }
+.page-options .shortcut-status { min-height: 1.5em; margin: 0.6rem 0 0; }
+.page-options .shortcut-status.error { color: var(--warn); }
