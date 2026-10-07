@@ -191,17 +191,17 @@
     }
   }
 
-  // Bottom-right of the area, or bottom-left when the drag started where the zone would appear.
+  // Top-right of the area, or top-left when the drag started where the zone would appear.
   function place(area, point) {
     const width = Math.min(ZONE_WIDTH, area.right - area.left - 2 * MARGIN);
-    const top = area.bottom - MARGIN - ZONE_HEIGHT;
+    const top = area.top + MARGIN;
     const rightLeft = area.right - MARGIN - width;
     const underPointer =
-      point.x >= rightLeft && point.x <= area.right - MARGIN && point.y >= top && point.y <= area.bottom - MARGIN;
+      point.x >= rightLeft && point.x <= area.right - MARGIN && point.y >= top && point.y <= top + ZONE_HEIGHT;
     const s = zone.style;
     s.width = width + "px";
-    s.top = "auto";
-    s.bottom = viewport().bottom - area.bottom + MARGIN + "px";
+    s.top = top + "px";
+    s.bottom = "auto";
     if (underPointer) {
       s.left = area.left + MARGIN + "px";
       s.right = "auto";
