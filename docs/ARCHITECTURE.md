@@ -21,7 +21,7 @@ Scripts are injected on demand, with one exception: while the `dropZone` setting
 | `src/content/banner.js` | synthid.com content script; also injected into source pages for notices | Shadow-DOM banner UI. |
 | `src/content/synthid.js` | synthid.com content script | Attaches the pending file to the site's file input (paste fallback); handles the Terms and sign-in dialogs. |
 | `src/popup/popup.html`, `popup.js`, `popup.css` | toolbar popup | Main view: lists the ways to check (Drag, naming the current corner or saying drag and drop is off; Right-click; Pick, with the "Pick media on this page" button), plus links to synthid.com and Settings. `popup.js` also switches between the main and settings views (Settings link, Back button, Esc). |
-| `src/popup/settings.js` | toolbar popup | Settings view: drag and drop (on/off, corner), general (switch to the synthid.com tab), keyboard shortcuts (Change, Reset, Remove through `commands.update`/`reset`), website access (status for all websites and synthid.com, and an "Allow access to all websites" button; turning access off is Firefox's own control). |
+| `src/popup/settings.js` | toolbar popup | Settings view, kept minimal: one row each for the drop zone (on/off), its corner (hidden while off) and switching to the synthid.com tab; one row per keyboard shortcut (click the keys to record a new one, ↺ resets and × removes it, through `commands.update`/`reset`); and, only while website or synthid.com access is missing, a line saying so with an "Allow access" button. Turning access off is Firefox's own control. |
 | `src/popup/base.css` | toolbar popup | Base styles shared by both views. |
 
 ## Shared globals (classic scripts, no modules)

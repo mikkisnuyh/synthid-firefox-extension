@@ -7,8 +7,8 @@
   const CORNERS = ["top-right", "bottom-right", "top-left", "bottom-left"];
   const COMMAND_ORDER = ["start-picker", "_execute_action"];
   const COMMAND_LABELS = {
-    "start-picker": "Pick media on this page",
-    _execute_action: "Open the SynthID Check menu",
+    "start-picker": "Pick media",
+    _execute_action: "Open menu",
   };
   const MODIFIER_CODES = /^(Shift|Control|Alt|Meta|OS)(Left|Right)$/;
   const KEY_NAMES = {
@@ -20,12 +20,11 @@
   const foreground = document.getElementById("openInForeground");
   const dropZone = document.getElementById("dropZone");
   const corner = document.getElementById("dropZoneCorner");
-  const cornerField = corner.parentElement;
+  const cornerRow = document.getElementById("corner-row");
   const shortcutList = document.getElementById("shortcuts");
   const shortcutStatus = document.getElementById("shortcut-status");
+  const accessBlock = document.getElementById("access-block");
   const accessStatus = document.getElementById("access-status");
-  const synthidStatus = document.getElementById("synthid-status");
-  const restoreBlock = document.getElementById("restore-block");
   const restore = document.getElementById("restore");
   const error = document.getElementById("error");
 
@@ -42,6 +41,7 @@
 
   function setShortcutStatus(text, isError) {
     shortcutStatus.textContent = text || "";
+    shortcutStatus.hidden = !text;
     shortcutStatus.classList.toggle("error", !!isError);
   }
 
@@ -49,13 +49,12 @@
     return CORNERS.includes(value) ? value : DEFAULTS.dropZoneCorner;
   }
 
-  // Applies stored values to the controls and the usage text.
+  // Applies stored values to the controls.
   function applySettings(s) {
     foreground.checked = s.openInForeground !== false;
     dropZone.checked = s.dropZone !== false;
     corner.value = normalizeCorner(s.dropZoneCorner);
-    corner.disabled = !dropZone.checked;
-    cornerField.classList.toggle("disabled", corner.disabled);
+    cornerRow.hidden = !dropZone.checked;
   }
 
   async function loadSettings() {
@@ -67,8 +66,7 @@
   });
 
   dropZone.addEventListener("change", () => {
-    corner.disabled = !dropZone.checked;
-    cornerField.classList.toggle("disabled", corner.disabled);
+    cornerRow.hidden = !dropZone.checked;
     browser.storage.sync
       .set({ dropZone: dropZone.checked })
       .then(() => browser.runtime.sendMessage({ type: "synthid:syncDropZone" }))
@@ -103,14 +101,15 @@
   }
 
   function commandLabel(cmd) {
-    if (cmd.name === "_execute_action") return COMMAND_LABELS._execute_action;
-    return cmd.description || COMMAND_LABELS[cmd.name] || cmd.name;
+    return COMMAND_LABELS[cmd.name] || cmd.description || cmd.name;
   }
 
-  function makeButton(text, onClick, disabled) {
+  function makeButton(text, title, onClick, disabled) {
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = text;
+    b.title = title;
+    b.setAttribute("aria-label", title);
     b.disabled = !!disabled;
     b.addEventListener("click", onClick);
     return b;
@@ -133,30 +132,28 @@
       name.className = "shortcut-name";
       name.textContent = commandLabel(cmd);
 
-      const keys = document.createElement("span");
-      keys.className = "shortcut-keys";
-      if (isRecording) keys.textContent = "Waiting for keys…";
+      // Clicking the keys changes the shortcut; clicking again while recording cancels.
+      const keys = makeButton("", isRecording ? "Cancel" : "Change " + commandLabel(cmd), () => {
+        if (isRecording) stopRecording();
+        else startRecording(cmd.name);
+      });
+      keys.classList.add("keys");
+      if (isRecording) keys.textContent = "Press keys…";
       else appendShortcut(keys, cmd.shortcut);
 
-      const actions = document.createElement("div");
-      actions.className = "shortcut-actions";
-      actions.append(
-        makeButton(isRecording ? "Cancel" : "Change", () => {
-          if (isRecording) stopRecording();
-          else startRecording(cmd.name);
-        }),
-        makeButton("Reset", () => runCommandAction(cmd.name, () => browser.commands.reset(cmd.name))),
-        makeButton(
-          "Remove",
-          () => runCommandAction(cmd.name, () => browser.commands.update({ name: cmd.name, shortcut: "" })),
-          !cmd.shortcut,
-        ),
+      const reset = makeButton("\u21BA", "Reset to default", () =>
+        runCommandAction(cmd.name, () => browser.commands.reset(cmd.name)),
       );
+      const remove = makeButton(
+        "\u00D7",
+        "Remove shortcut",
+        () => runCommandAction(cmd.name, () => browser.commands.update({ name: cmd.name, shortcut: "" })),
+        !cmd.shortcut,
+      );
+      reset.classList.add("icon");
+      remove.classList.add("icon");
 
-      const line = document.createElement("div");
-      line.className = "shortcut-line";
-      line.append(name, keys);
-      row.append(line, actions);
+      row.append(name, keys, reset, remove);
       shortcutList.appendChild(row);
     }
   }
@@ -182,7 +179,7 @@
 
   function startRecording(name) {
     recording = name;
-    setShortcutStatus("Press the new shortcut… Esc to cancel", false);
+    setShortcutStatus("");
     document.addEventListener("keydown", onRecordKey, true);
     document.addEventListener("pointerdown", onRecordPointer, true);
     renderShortcuts();
@@ -224,10 +221,10 @@
   function buildShortcut(e) {
     const key = keyName(e);
     if (!key) {
-      return { problem: "That key can't be used. Use a letter, number, F1 to F12, Comma, Period, Space, or one of Home, End, PageUp, PageDown, Insert, Delete or the arrow keys." };
+      return { problem: "That key can't be used." };
     }
     if (e.metaKey && !isMac) {
-      return { problem: "The Windows or Super key can't be used here. Try Ctrl, Alt or Shift." };
+      return { problem: "Use Ctrl, Alt or Shift." };
     }
     const mods = [];
     if (isMac && e.metaKey) mods.push("Command");
@@ -236,11 +233,11 @@
     const hasPrimary = mods.length > 0;
     if (e.shiftKey) mods.push("Shift");
     if (mods.length > 2) {
-      return { problem: "Firefox allows at most two modifier keys in a shortcut." };
+      return { problem: "Use at most two modifier keys." };
     }
     const isFunctionKey = /^F\d+$/.test(key);
     if (!hasPrimary && !isFunctionKey) {
-      return { problem: "A shortcut needs at least one of " + (isMac ? "Command, Control or Option" : "Ctrl or Alt") + " (Shift alone isn't enough), unless it is F1 to F12." };
+      return { problem: "Add " + (isMac ? "Command, Control or Option" : "Ctrl or Alt") + "." };
     }
     return { shortcut: mods.concat(key).join("+") };
   }
@@ -258,7 +255,7 @@
     }
     const result = buildShortcut(e);
     if (result.problem) {
-      setShortcutStatus(result.problem + " Press another shortcut, or Esc to cancel.", true);
+      setShortcutStatus(result.problem + " Esc cancels.", true);
       return;
     }
     const name = recording;
@@ -273,7 +270,7 @@
         },
         (err) => {
           saving = false;
-          setShortcutStatus((err && err.message ? err.message : String(err)) + " Try another shortcut, or Esc to cancel.", true);
+          setShortcutStatus((err && err.message ? err.message : String(err)) + " Esc cancels.", true);
         },
       );
   }
@@ -292,11 +289,11 @@
       browser.permissions.contains(ALL),
       browser.permissions.contains(SYNTHID),
     ]);
-    accessStatus.textContent = hasAll
-      ? "SynthID Check has access to all websites."
-      : "Access to websites is turned off, so SynthID Check can't download files to check.";
-    synthidStatus.hidden = hasSynthid;
-    restoreBlock.hidden = hasAll && hasSynthid;
+    // Shown only when something is missing.
+    accessBlock.hidden = hasAll && hasSynthid;
+    accessStatus.textContent = !hasAll
+      ? "Website access is off, so files can't be downloaded."
+      : "Access to synthid.com is off, so files can't be attached.";
   }
 
   restore.addEventListener("click", () => {
