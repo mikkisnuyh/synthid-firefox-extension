@@ -1,7 +1,8 @@
 /* Shadow-DOM banner shared by the synthid.com content script and on-demand notices. */
 (function () {
   "use strict";
-  if (globalThis.SynthIDBanner) return;
+  // Type check: a page element named "SynthIDBanner" (window named property) is not a banner.
+  if (typeof globalThis.SynthIDBanner?.show === "function") return;
 
   const STATES = ["info", "working", "warn", "error", "success"];
   const CSS = `

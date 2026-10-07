@@ -2,13 +2,15 @@
  * Never clicks the Terms button, never retries without a user click. */
 (function () {
   "use strict";
-  if (globalThis.__synthidCheckLoaded) return;
+  // Strict check: page elements named "__synthidCheckLoaded" can't satisfy `=== true`.
+  if (globalThis.__synthidCheckLoaded === true) return;
   globalThis.__synthidCheckLoaded = true;
 
   const FILE_INPUT_WAIT_MS = 15000;
   const SIGN_IN_WATCH_MS = 5000;
   const TERMS_WAIT_MS = 10 * 60 * 1000;
   const TERMS_GRACE_MS = 1500;
+  const TERMS_SETTLE_MS = 2000;
 
   const Banner = globalThis.SynthIDBanner;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -142,6 +144,8 @@
 
   // Returns the name of the method that worked; throws if none did.
   function attach(input) {
+    if (dismissed) throw new Error("dismissed");
+    if (termsShown()) throw new Error("terms dialog is showing");
     const steps = [];
     if (input) {
       steps.push(["input", () => assignToInput(input)]);
@@ -180,30 +184,65 @@
   }
 
   async function run() {
-    if (busy || !file) return;
+    if (busy || !file || dismissed) return;
     busy = true;
     try {
       show({ state: "working", title: "SynthID Check", message: "Preparing your file…" });
 
       // Terms dialog may render a moment after load; give it a short grace period.
-      const appeared = await waitFor(termsShown, TERMS_GRACE_MS);
-      if (appeared) {
-        show({
-          state: "info",
-          title: "SynthID Check",
-          message: "Accept the terms to continue. Your file will be attached afterwards.",
-        });
-        const gone = await waitFor(() => !termsShown(), TERMS_WAIT_MS);
-        if (!gone) return;
-        await sleep(600);
+      let termsSeen = !!(await waitFor(termsShown, TERMS_GRACE_MS));
+      if (dismissed) return;
+
+      // Invariant: never attach while the "Agree and continue" dialog is visible.
+      let input = null;
+      for (;;) {
+        if (termsSeen) {
+          show({
+            state: "info",
+            title: "SynthID Check",
+            message: "Accept the terms to continue. Your file will be attached afterwards.",
+          });
+          const gone = await waitFor(() => !termsShown(), TERMS_WAIT_MS);
+          if (dismissed) return;
+          if (!gone) {
+            show({
+              state: "warn",
+              title: "SynthID Check",
+              message: "The terms were not accepted in time. Accept them, then press Attach file.",
+              actions: actionsAfter([{ id: "attach", label: "Attach file", primary: true }]),
+            });
+            return;
+          }
+          await sleep(600);
+          if (dismissed) return;
+          termsSeen = false;
+        }
+
+        show({ state: "working", title: "SynthID Check", message: "Attaching your file…" });
+        // Watch for Terms while waiting for the input: they may render late.
+        const found = await waitFor(() => (termsShown() ? "terms" : fileInput()), FILE_INPUT_WAIT_MS);
+        if (dismissed) return;
+        if (found === "terms" || termsShown()) {
+          termsSeen = true;
+          continue;
+        }
+        // The input can exist before a late Terms dialog renders. Require a short
+        // quiet period without Terms before attaching.
+        if (await waitFor(termsShown, TERMS_SETTLE_MS)) {
+          if (dismissed) return;
+          termsSeen = true;
+          continue;
+        }
+        if (dismissed) return;
+        input = fileInput() || found;
+        break;
       }
 
-      show({ state: "working", title: "SynthID Check", message: "Attaching your file…" });
-      const input = await waitFor(fileInput, FILE_INPUT_WAIT_MS);
       const method = attach(input);
       console.debug("SynthID Check: attached via", method);
 
       const signIn = !!(await waitFor(signInShown, SIGN_IN_WATCH_MS));
+      if (dismissed) return;
       let ok = true;
       try {
         await send({ type: "synthid:attached", signInRequired: signIn });
@@ -228,6 +267,7 @@
         });
       }
     } catch (e) {
+      if (dismissed) return;
       console.warn("SynthID Check: attach failed", e);
       showFailure();
     } finally {
