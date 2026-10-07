@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "lint": "web-ext lint",
-    "test": "node --test test/",
+    "test": "node --test \"test/*.test.js\"",
     "build": "web-ext build --overwrite-dest",
     "start": "web-ext run"
   },
