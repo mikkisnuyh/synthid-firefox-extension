@@ -1,0 +1,1 @@
+# synthid-firefox-extension
