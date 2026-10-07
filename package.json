@@ -1,0 +1,17 @@
+{
+  "name": "synthid-firefox-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Firefox extension: right-click media to check it for a SynthID watermark on synthid.com",
+  "license": "MIT",
+  "scripts": {
+    "lint": "web-ext lint",
+    "test": "node --test test/",
+    "build": "web-ext build --overwrite-dest",
+    "start": "web-ext run"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "web-ext": "^10.7.0"
+  }
+}
