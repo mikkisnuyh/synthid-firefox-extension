@@ -34,7 +34,7 @@ const ALL_SITES_REQUEST = { origins: [ALL_URLS] };
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8, 250, 251]);
 const CDN_PNG = "https://cdn.example.com/img/cat.png";
 const PAGE_URL = "https://example.com/page";
-const OPEN_SETTINGS_ACTIONS = [{ id: "open-settings", label: "Open settings", primary: true }];
+const SETTINGS_HINT = "Turn it back on in its settings: click the SynthID Check button in the toolbar, then Settings.";
 
 // ---------------------------------------------------------------------------
 // Mock browser
@@ -157,7 +157,6 @@ function makeEnv(opts = {}) {
       onMessage: events.onMessage,
       openOptionsPage: async () => {
         calls.openOptionsPage = (calls.openOptionsPage || 0) + 1;
-        if (env.openOptionsError) throw env.openOptionsError;
       },
     },
     menus: {
@@ -580,9 +579,9 @@ test("access revoked and declined: a cross-origin image gets the access notice, 
   assert.equal(notice.args[0].state, "warn");
   assert.equal(
     notice.args[0].message,
-    "SynthID Check needs access to websites to download this file. Turn it back on in SynthID Check's settings.",
+    `SynthID Check needs access to websites to download this file. ${SETTINGS_HINT}`,
   );
-  assert.deepEqual(notice.args[0].actions, OPEN_SETTINGS_ACTIONS);
+  assert.deepEqual(notice.args[0].actions, []);
   assert.equal(env.calls.fetch.length, 0);
   assert.equal(env.calls.tabsCreate.length, 0, "no synthid.com tab and no grant page");
   assert.equal(env.calls.permissionsRequest.length, 1, "no second request outside the click");
@@ -779,10 +778,10 @@ test("without synthid.com host access nothing is opened and the user is told", a
   const notice = bannerCalls(env, 5)[0].args[0];
   assert.equal(
     notice.message,
-    "SynthID Check needs access to synthid.com to attach the file. Turn it back on in SynthID Check's settings.",
+    `SynthID Check needs access to synthid.com to attach the file. ${SETTINGS_HINT}`,
   );
   assert.equal(notice.state, "warn");
-  assert.deepEqual(notice.actions, OPEN_SETTINGS_ACTIONS);
+  assert.deepEqual(notice.actions, []);
   assert.equal(env.calls.tabsCreate.length, 0);
 });
 
@@ -1544,16 +1543,16 @@ test("synthid:dropped with no media sends no notice and opens nothing", async ()
 
 const OPTIONS_URL = EXT_BASE + "src/options/options.html";
 
-test("synthid:syncDropZone from the options page re-syncs the registration and replies ok", async () => {
+test("synthid:syncDropZone from the popup re-syncs the registration and replies ok", async () => {
   const env = await loadBackground({ syncStorage: { dropZone: false } });
   assert.equal(env.registeredScripts.size, 0);
   env.syncStorage.dropZone = true;
-  const reply = await env.send({ type: "synthid:syncDropZone" }, { id: EXT_ID, url: OPTIONS_URL + "?x=1" });
+  const reply = await env.send({ type: "synthid:syncDropZone" }, { id: EXT_ID, url: POPUP_URL + "?x=1" });
   assert.deepEqual(reply, { ok: true });
   assert.equal(env.registeredScripts.size, 1, "registered by the time the reply arrives");
 
   env.syncStorage.dropZone = false;
-  assert.deepEqual(await env.send({ type: "synthid:syncDropZone" }, { id: EXT_ID, url: OPTIONS_URL }), { ok: true });
+  assert.deepEqual(await env.send({ type: "synthid:syncDropZone" }, { id: EXT_ID, url: POPUP_URL }), { ok: true });
   assert.equal(env.registeredScripts.size, 0);
 });
 
@@ -1562,8 +1561,9 @@ test("synthid:syncDropZone from any other sender is refused and changes nothing"
   env.syncStorage.dropZone = true;
   const tab = env.addTab(sourceTab());
   for (const sender of [
-    { id: EXT_ID, url: POPUP_URL },
+    { id: EXT_ID, url: OPTIONS_URL },
     { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 },
+    { id: EXT_ID, url: "https://evil.example/src/popup/popup.html" },
     { id: EXT_ID, url: "https://evil.example/" + "src/options/options.html" },
     { id: EXT_ID },
   ]) {
@@ -1583,20 +1583,22 @@ test("other notices carry no actions", async () => {
   assert.deepEqual(bannerCalls(env, 5)[0].args[0].actions, []);
 });
 
-test("synthid:openSettings opens the options page and replies ok", async () => {
+test("synthid:openSettings is gone: unknown message, nothing happens", async () => {
   const env = await loadBackground();
   const tab = env.addTab(sourceTab());
-  assert.deepEqual(await env.send({ type: "synthid:openSettings" }, { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 }), { ok: true });
-  assert.equal(env.calls.openOptionsPage, 1);
+  assert.equal(await env.send({ type: "synthid:openSettings" }, { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 }), undefined);
+  assert.equal(env.calls.openOptionsPage, undefined);
 });
 
-test("synthid:openSettings replies not ok when openOptionsPage rejects", async () => {
-  const env = await loadBackground();
-  env.openOptionsError = new Error("nope");
-  assert.deepEqual(await env.send({ type: "synthid:openSettings" }, { id: EXT_ID, url: PAGE_URL }), { ok: false });
-  assert.equal(env.calls.openOptionsPage, 1);
-});
-
-test("manifest opens the options page in a tab", () => {
-  assert.deepEqual(MANIFEST.options_ui, { page: "src/options/options.html", open_in_tab: true });
+test("manifest has no options page and every file it references exists", () => {
+  assert.equal("options_ui" in MANIFEST, false);
+  const files = [
+    ...MANIFEST.background.scripts,
+    ...MANIFEST.content_scripts.flatMap((c) => [...(c.js || []), ...(c.css || [])]),
+    MANIFEST.action.default_popup,
+    MANIFEST.action.default_icon,
+    ...Object.values(MANIFEST.icons),
+  ];
+  assert.ok(files.length >= 8);
+  for (const f of files) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
 });
