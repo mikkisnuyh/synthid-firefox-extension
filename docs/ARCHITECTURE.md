@@ -117,15 +117,18 @@ Declared with `run_at: document_start`, so the file transfer from the background
 
 1. `getPending`. If none is found, exit silently: the user is just browsing the site. Then wait until the document root exists.
 2. If a record exists and `autoAttach` is false (already attached, no sign-in seen), show the banner "File from <host> is ready" with **Attach again** and **Copy image** buttons. Don't auto-attach, so reloads don't burn quota.
-3. Wait for either the Terms dialog (a visible "Agree and continue" button) or `input[type=file]`, whichever comes first (15 s timeout for the input).
-   - **Terms dialog:** show "Accept the terms to continue. Your file will be attached afterwards." and wait until it's gone. Never click it.
-   - **Input:** if synthid.com's `localStorage.firstTime` says `termsAccepted: true`, attach at once. Otherwise (first visit) require 1 s without a Terms dialog first.
+3. Wait for `input[type=file]`. Then wait on page state, not fixed delays (the only timeouts are generous fallbacks in case the site changes):
+   - **Terms:** synthid.com stores its state in `localStorage.firstTime` once the app starts (`{isInitialized, termsAccepted, …}`). Attach only when `termsAccepted` is true and the "Agree and continue" dialog isn't visible. While it isn't, show "Accept the terms to continue…" and re-check on every DOM change. Never click it.
+   - **Sign-in:** Firebase keeps a saved session in IndexedDB (`firebaseLocalStorageDb` / `firebaseLocalStorage`, key `firebase:authUser:…`). The script reads it without ever creating the database.
+     - **If a session is saved,** wait until the page shows the user signed in: the account button renders `sid-account-avatar .profile-image`. Attaching before that makes the site treat the user as signed out.
+     - **If the session disappears while waiting** (expired, so Firebase signed out), attach right away.
 4. **Attach:** `new DataTransfer()`, `items.add(file)`, `input.files = dt.files`, then dispatch `input` and `change` with `bubbles: true`.
    - If that throws, fall back to a synthetic `paste` on `document`.
    - If that fails too, use the Firefox Xray fallbacks through `window.wrappedJSObject` and `cloneInto`.
-5. Watch 1 s for the sign-in dialog, then send `synthid:attached` with `signInRequired`.
-   - **Sign-in needed:** a banner with **Retry** and **Copy image** that stays until dismissed.
-   - **Otherwise:** a "File attached" success banner with no buttons. It hides itself after 4 s, and the pending record is then cleared.
+5. **Result:**
+   - **Signed in:** send `synthid:attached` with `signInRequired: false` and show the "File attached" success at once: no buttons, hides itself after 4 s, and the pending record is then cleared. If the site shows its sign-in prompt anyway, switch to the sign-in banner.
+   - **Signed out:** wait for the site's sign-in prompt, then show "Sign in, then press Retry" with **Retry** and **Copy image**. When the account button later shows the user signed in, the banner says so.
+
 6. **Copy image:** `navigator.clipboard.write([new ClipboardItem({"image/png": …})])` inside the click handler. Images only.
 7. On dismiss, send `synthid:clear`.
 

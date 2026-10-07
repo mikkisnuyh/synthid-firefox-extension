@@ -8,6 +8,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
+const { IDBFactory } = require("fake-indexeddb");
 
 const SRC = path.join(__dirname, "..", "src", "content");
 const BANNER = fs.readFileSync(path.join(SRC, "banner.js"), "utf8");
@@ -24,7 +25,42 @@ async function until(fn, what, timeout = 3000) {
   assert.fail("timed out waiting for " + what);
 }
 
-function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = false } = {}) {
+// Firebase keeps its saved session in this database (as on synthid.com).
+function seedSession(idb) {
+  return new Promise((resolve, reject) => {
+    const req = idb.open("firebaseLocalStorageDb", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("firebaseLocalStorage", { keyPath: "fbase_key" });
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction("firebaseLocalStorage", "readwrite");
+      tx.objectStore("firebaseLocalStorage").put({ fbase_key: "firebase:authUser:KEY:[DEFAULT]", value: {} });
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => reject(tx.error);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function clearSession(idb) {
+  return new Promise((resolve, reject) => {
+    const req = idb.open("firebaseLocalStorageDb");
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction("firebaseLocalStorage", "readwrite");
+      tx.objectStore("firebaseLocalStorage").clear();
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = false, siteState = true } = {}) {
   const dom = new JSDOM(`<!doctype html><body><input type="file" hidden></body>`, {
     url: "https://synthid.com/",
     runScripts: "outside-only",
@@ -62,8 +98,9 @@ function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = fal
     },
   });
 
-  if (termsAccepted) {
-    w.localStorage.setItem("firstTime", JSON.stringify({ isInitialized: true, termsAccepted: true }));
+  w.indexedDB = new IDBFactory();
+  if (siteState) {
+    w.localStorage.setItem("firstTime", JSON.stringify({ isInitialized: true, termsAccepted }));
   }
   if (termsDialog) {
     const b = w.document.createElement("button");
@@ -125,6 +162,16 @@ function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = fal
     w,
     log,
     banner,
+    seedSession: () => seedSession(w.indexedDB),
+    clearSession: () => clearSession(w.indexedDB),
+    // What the site renders in the account button once a session is restored.
+    showAvatar() {
+      const a = w.document.createElement("sid-account-avatar");
+      const img = w.document.createElement("img");
+      img.className = "profile-image";
+      a.append(img);
+      w.document.body.append(a);
+    },
     start() {
       w.eval(BANNER);
       w.eval(SYNTHID);
@@ -135,13 +182,16 @@ function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = fal
   };
 }
 
-test("returning visitor: attaches without waiting, then shows a button-less success that hides itself", async () => {
+test("signed in: waits for the session to be restored, then attaches and shows a button-less success that hides itself", async () => {
   const env = setup();
-  const t0 = Date.now();
+  await env.seedSession();
   env.start();
-  await until(() => env.log.includes("change"), "attach");
-  assert.ok(Date.now() - t0 < 500, "attached within 500 ms, took " + (Date.now() - t0));
+  await until(() => env.banner() && /sign you in/.test(env.banner().text), "waiting-for-sign-in banner");
+  await sleep(300);
+  assert.ok(!env.log.includes("change"), "not attached before the session is restored");
 
+  env.showAvatar(); // Firebase finished restoring the session
+  await until(() => env.log.includes("change"), "attach after restore");
   await until(() => env.banner() && /File attached/.test(env.banner().text), "success banner");
   assert.deepEqual(env.banner().buttons, [], "success banner has no action buttons");
   assert.ok(env.log.includes("synthid:attached:false"));
@@ -151,38 +201,87 @@ test("returning visitor: attaches without waiting, then shows a button-less succ
   env.close();
 });
 
-test("sign-in needed: shows the sign-in banner with Retry, no auto-hide", async () => {
-  const env = setup({ signInOnAttach: true });
+test("signed in and already restored: attaches right away", async () => {
+  const env = setup();
+  await env.seedSession();
+  env.showAvatar();
+  const t0 = Date.now();
   env.start();
+  await until(() => env.log.includes("change"), "attach");
+  assert.ok(Date.now() - t0 < 500, "attached within 500 ms, took " + (Date.now() - t0));
+  env.close();
+});
+
+test("signed out: attaches right away, shows Sign in + Retry, then notices the sign-in", async () => {
+  const env = setup({ signInOnAttach: true });
+  const t0 = Date.now();
+  env.start();
+  await until(() => env.log.includes("change"), "attach");
+  assert.ok(Date.now() - t0 < 500, "no waiting when there is no saved session");
   await until(() => env.banner() && /Sign in required/.test(env.banner().text), "sign-in banner");
   assert.ok(env.banner().buttons.includes("Retry"));
   assert.ok(env.log.includes("synthid:attached:true"));
   await sleep(4500);
   assert.ok(env.banner() && /Sign in required/.test(env.banner().text), "sign-in banner stays");
   assert.ok(!env.log.includes("synthid:clear"));
+
+  env.showAvatar(); // the user signed in through the site's dialog
+  await until(() => env.banner() && /Signed in/.test(env.banner().text), "signed-in banner");
+  assert.ok(env.banner().buttons.includes("Retry"));
   env.close();
 });
 
-test("first visit: never attaches while the Terms dialog is showing", async () => {
-  const env = setup({ termsAccepted: false, termsDialog: true });
+test("expired saved session: attaches as soon as the site drops it, without waiting for a timeout", async () => {
+  const env = setup({ signInOnAttach: true });
+  await env.seedSession();
+  env.start();
+  await until(() => env.banner() && /sign you in/.test(env.banner().text), "waiting-for-sign-in banner");
+  await env.clearSession(); // Firebase couldn't refresh the session and signed out
+  await until(() => env.log.includes("change"), "attach after sign-out", 3000);
+  await until(() => env.banner() && /Sign in required/.test(env.banner().text), "sign-in banner");
+  env.close();
+});
+
+test("first visit: waits for the site's state and never attaches while the Terms dialog is showing", async () => {
+  const env = setup({ siteState: false, termsDialog: true });
   env.start();
   await until(() => env.banner() && /Accept the terms/.test(env.banner().text), "terms banner");
+  // The app stores its state with the Terms not yet accepted.
+  env.w.localStorage.setItem("firstTime", JSON.stringify({ isInitialized: true, termsAccepted: false }));
   await sleep(1500);
   assert.ok(!env.log.includes("change"), "not attached before acceptance");
 
   // The user accepts: the site stores it and removes the dialog.
-  env.w.localStorage.setItem("firstTime", JSON.stringify({ termsAccepted: true }));
+  env.w.localStorage.setItem("firstTime", JSON.stringify({ isInitialized: true, termsAccepted: true }));
   env.w.document.getElementById("agree").remove();
   await until(() => env.log.includes("change"), "attach after acceptance");
   env.close();
 });
 
-test("first visit without the stored flag: waits a short Terms-free period before attaching", async () => {
+test("Terms not accepted yet but the dialog renders late: still no attach", async () => {
   const env = setup({ termsAccepted: false });
-  const t0 = Date.now();
   env.start();
-  await until(() => env.log.includes("change"), "attach", 4000);
-  const took = Date.now() - t0;
-  assert.ok(took >= 900 && took < 2500, "attached after the safety wait, took " + took);
+  await sleep(800);
+  assert.ok(!env.log.includes("change"), "stored termsAccepted:false blocks attaching");
+  const b = env.w.document.createElement("button");
+  b.textContent = "Agree and continue";
+  env.w.document.body.append(b);
+  await until(() => env.banner() && /Accept the terms/.test(env.banner().text), "terms banner");
+  env.w.localStorage.setItem("firstTime", JSON.stringify({ isInitialized: true, termsAccepted: true }));
+  b.remove();
+  await until(() => env.log.includes("change"), "attach after acceptance");
+  env.close();
+});
+
+test("dismissing while waiting for the sign-in cancels the attach", async () => {
+  const env = setup();
+  await env.seedSession();
+  env.start();
+  await until(() => env.banner() && /sign you in/.test(env.banner().text), "waiting-for-sign-in banner");
+  env.w.__bannerRoot.querySelector(".close").click();
+  env.showAvatar();
+  await sleep(600);
+  assert.ok(!env.log.includes("change"), "nothing attached after dismiss");
+  assert.ok(env.log.includes("synthid:clear"));
   env.close();
 });
