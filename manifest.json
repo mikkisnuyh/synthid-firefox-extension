@@ -33,7 +33,7 @@
         "src/content/banner.js",
         "src/content/synthid.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "action": {

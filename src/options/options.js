@@ -42,6 +42,8 @@
   browser.permissions.onAdded.addListener(() => render().catch(showError));
   browser.permissions.onRemoved.addListener(() => render().catch(showError));
 
+  document.getElementById("version").textContent = "v" + browser.runtime.getManifest().version;
+
   loadSettings().catch(showError);
   render().catch(showError);
 })();

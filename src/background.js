@@ -260,7 +260,7 @@ function createMenus() {
       });
       browser.menus.create({
         id: "find-media",
-        title: "Find media here and check with SynthID",
+        title: "Find media under the cursor and check with SynthID",
         contexts: ["page", "frame", "link"],
       });
     })

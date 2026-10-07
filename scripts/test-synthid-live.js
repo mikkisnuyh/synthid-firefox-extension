@@ -162,6 +162,34 @@ async function waitBanner(page, re, timeout = 20000) {
     const after = await page.evaluate(() => window.__msgs.map((m) => m.type));
     check("dismiss sends synthid:clear", after.includes("synthid:clear"));
     check("banner hidden after dismiss", (await bannerText(page)) === "");
+
+    // c. Returning visitor (Terms already accepted in this profile), scripts injected at
+    // document_start as in the extension: the file should be attached right away.
+    const page2 = await context.newPage();
+    page2.on("pageerror", (e) => console.log("  page2 error:", e.message));
+    page2.on("console", (m) => { if (/SynthID/.test(m.text())) console.log("  [page2] " + m.text()); });
+    await page2.addInitScript(
+      () => {
+        const t0 = performance.now();
+        document.addEventListener(
+          "change",
+          (e) => {
+            if (e.target && e.target.type === "file" && window.__changeAt === undefined) {
+              window.__changeAt = Math.round(performance.now() - t0);
+            }
+          },
+          true,
+        );
+      },
+    );
+    await page2.addInitScript({ content: bannerJs + "\n;\n" + synthJs });
+    await page2.goto("https://synthid.com/", { waitUntil: "load", timeout: 60000 });
+    const returning = await waitBanner(page2, /sign in/i, 15000);
+    const changeAt = await page2.evaluate(() => window.__changeAt);
+    check("returning visitor: no Terms banner, file attached", /sign in/i.test(returning), JSON.stringify(returning));
+    check("returning visitor: attached within 1.5 s of navigation", typeof changeAt === "number" && changeAt < 1500, String(changeAt));
+    console.log("  returning visitor attach time: " + changeAt + " ms");
+    await page2.screenshot({ path: path.join(OUT, "5-returning-visitor.png") });
   } catch (e) {
     console.log("FAIL: unexpected error: " + e.message);
     failed++;

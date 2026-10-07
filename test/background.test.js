@@ -384,7 +384,7 @@ test("onInstalled creates the two menu items with the contract ids and contexts"
   assert.equal(env.calls.menusRemoveAll, 1);
   assert.deepEqual(env.calls.menusCreate, [
     { id: "check-media", title: "Check with SynthID", contexts: ["image", "video", "audio"] },
-    { id: "find-media", title: "Find media here and check with SynthID", contexts: ["page", "frame", "link"] },
+    { id: "find-media", title: "Find media under the cursor and check with SynthID", contexts: ["page", "frame", "link"] },
   ]);
 });
 

@@ -91,7 +91,7 @@ Firefox runtime messaging uses structured clone, so `Blob` crosses the boundary 
 Items are created in `runtime.onInstalled` (and `runtime.onStartup`, after `menus.removeAll()`, for robustness):
 
 - `check-media`: "Check with SynthID", contexts `["image","video","audio"]`.
-- `find-media`: "Find media here and check with SynthID", contexts `["page","frame","link"]`.
+- `find-media`: "Find media under the cursor and check with SynthID", contexts `["page","frame","link"]`.
 
 `menus.onClicked(info, tab)`:
 1. **check-media** with `info.srcUrl`:
@@ -113,19 +113,25 @@ The toolbar button opens the popup (`action.default_popup`), so `action.onClicke
 - **Errors:** notify in the source tab through the banner, injected with `scripting.executeScript` (`activeTab` allows this). If injection fails (for example on about: pages), fall back to `console.warn`.
 
 ### synthid.com page (`synthid.js`)
-1. `getPending`. If none is found, exit silently: the user is just browsing the site.
+Declared with `run_at: document_start`, so the file transfer from the background overlaps with the page loading. Timings were measured on the live site: the upload field appears about 0.26 s after load for returning visitors; on a first visit, the Terms dialog renders just before the field; the sign-in dialog appears about 10 ms after a file is added.
+
+1. `getPending`. If none is found, exit silently: the user is just browsing the site. Then wait until the document root exists.
 2. If a record exists and `autoAttach` is false (already attached, no sign-in seen), show the banner "File from <host> is ready" with **Attach again** and **Copy image** buttons. Don't auto-attach, so reloads don't burn quota.
-3. Terms dialog: detected by a visible button with text "Agree and continue". Show the banner "Accept the terms to continue. Your file will be attached afterwards." and wait (MutationObserver) until it's gone. Never click it.
-4. Wait for `input[type=file]` (MutationObserver, 15 s). Build a `File` from the blob, `new DataTransfer()`, `items.add(file)`, `input.files = dt.files`, dispatch `change` (and `input`) with `bubbles: true`.
-   - If the input is missing, or the assignment throws, try a synthetic `ClipboardEvent("paste", {clipboardData: dt, bubbles: true, cancelable: true})` on `document`.
-   - Firefox Xray fallback: build through `window.wrappedJSObject` (`new window.wrappedJSObject.DataTransfer()`, with the File cloned using `cloneInto`).
-5. After attaching, watch for about 5 s for the sign-in dialog (text "Please sign in before detection"). Then send `synthid:attached` with `signInRequired`. If it's needed, the banner says "Sign in, then press Retry". Buttons: Retry, Copy image.
-6. **Copy image:** `navigator.clipboard.write([new ClipboardItem({[type]: blob})])` inside the click handler; on success the banner says "Copied, press Ctrl+V on the page". Only for image types; audio and video get a hint to drag the file in instead.
+3. Wait for either the Terms dialog (a visible "Agree and continue" button) or `input[type=file]`, whichever comes first (15 s timeout for the input).
+   - **Terms dialog:** show "Accept the terms to continue. Your file will be attached afterwards." and wait until it's gone. Never click it.
+   - **Input:** if synthid.com's `localStorage.firstTime` says `termsAccepted: true`, attach at once. Otherwise (first visit) require 1 s without a Terms dialog first.
+4. **Attach:** `new DataTransfer()`, `items.add(file)`, `input.files = dt.files`, then dispatch `input` and `change` with `bubbles: true`.
+   - If that throws, fall back to a synthetic `paste` on `document`.
+   - If that fails too, use the Firefox Xray fallbacks through `window.wrappedJSObject` and `cloneInto`.
+5. Watch 1 s for the sign-in dialog, then send `synthid:attached` with `signInRequired`.
+   - **Sign-in needed:** a banner with **Retry** and **Copy image** that stays until dismissed.
+   - **Otherwise:** a "File attached" success banner with no buttons. It hides itself after 4 s, and the pending record is then cleared.
+6. **Copy image:** `navigator.clipboard.write([new ClipboardItem({"image/png": …})])` inside the click handler. Images only.
 7. On dismiss, send `synthid:clear`.
 
 ## Hardening added after review
 
-- **Dismiss and Terms.** `synthid.js` stops the flow as soon as the banner is dismissed. It never attaches while the "Agree and continue" dialog is visible: it watches for the dialog while waiting for the file input, and it requires a 2-second period with no dialog before attaching. A Retry or "Attach again" click goes through the same checks.
+- **Dismiss and Terms.** `synthid.js` stops the flow as soon as the banner is dismissed. It never attaches while the "Agree and continue" dialog is visible: it watches for the dialog while waiting for the file input, and on a first visit (no Terms acceptance stored by the site) it requires a short period with no dialog before attaching. A Retry or "Attach again" click goes through the same checks.
 - **Private windows.** Pending files from private windows are kept only in the background's memory, never in IndexedDB. All pending records are cleared on browser start, because tab ids restart each session.
 - **Script injection.** Every `scripting.executeScript` call uses `injectImmediately: true`, so notices and pick mode work on pages that are still loading. Each tab has its own notice queue.
 - **Pick mode.** It ignores synthetic (`!isTrusted`) events, so a page can't choose the media for the user.

@@ -7,10 +7,12 @@
   globalThis.__synthidCheckLoaded = true;
 
   const FILE_INPUT_WAIT_MS = 15000;
-  const SIGN_IN_WATCH_MS = 5000;
+  // synthid.com shows its sign-in dialog ~10 ms after a file is added (measured).
+  const SIGN_IN_WATCH_MS = 1000;
   const TERMS_WAIT_MS = 10 * 60 * 1000;
-  const TERMS_GRACE_MS = 1500;
-  const TERMS_SETTLE_MS = 2000;
+  // Only when the site hasn't recorded accepted Terms: a Terms-free period before attaching.
+  const TERMS_SETTLE_MS = 1000;
+  const SUCCESS_HIDE_MS = 4000;
 
   const Banner = globalThis.SynthIDBanner;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -19,9 +21,11 @@
   let file = null;
   let busy = false;
   let dismissed = false;
+  let hideTimer = null;
 
   function show(o) {
     if (dismissed) return;
+    clearTimeout(hideTimer);
     try {
       Banner.show(o);
     } catch (e) {
@@ -38,6 +42,17 @@
       if (/agree and continue/i.test(b.textContent || "") && isVisible(b)) return true;
     }
     return false;
+  }
+
+  // synthid.com records accepted Terms in localStorage ("firstTime" → termsAccepted).
+  // Only used to skip the safety wait; the dialog itself is still checked every time.
+  function termsAcceptedStored() {
+    try {
+      const v = JSON.parse(localStorage.getItem("firstTime") || "null");
+      return !!(v && v.termsAccepted === true);
+    } catch (e) {
+      return false;
+    }
   }
 
   function signInShown() {
@@ -73,7 +88,7 @@
       test();
       if (done) return;
       mo = new MutationObserver(test);
-      mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+      mo.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
       poll = setInterval(test, 500);
       timer = setTimeout(() => finish(null), timeoutMs);
     });
@@ -187,16 +202,13 @@
     if (busy || !file || dismissed) return;
     busy = true;
     try {
-      show({ state: "working", title: "SynthID Check", message: "Preparing your file…" });
-
-      // Terms dialog may render a moment after load; give it a short grace period.
-      let termsSeen = !!(await waitFor(termsShown, TERMS_GRACE_MS));
-      if (dismissed) return;
-
       // Invariant: never attach while the "Agree and continue" dialog is visible.
       let input = null;
       for (;;) {
-        if (termsSeen) {
+        show({ state: "working", title: "SynthID Check", message: "Attaching your file…" });
+        const found = await waitFor(() => (termsShown() ? "terms" : fileInput()), FILE_INPUT_WAIT_MS);
+        if (dismissed) return;
+        if (found === "terms" || termsShown()) {
           show({
             state: "info",
             title: "SynthID Check",
@@ -213,24 +225,12 @@
             });
             return;
           }
-          await sleep(600);
-          if (dismissed) return;
-          termsSeen = false;
-        }
-
-        show({ state: "working", title: "SynthID Check", message: "Attaching your file…" });
-        // Watch for Terms while waiting for the input: they may render late.
-        const found = await waitFor(() => (termsShown() ? "terms" : fileInput()), FILE_INPUT_WAIT_MS);
-        if (dismissed) return;
-        if (found === "terms" || termsShown()) {
-          termsSeen = true;
           continue;
         }
-        // The input can exist before a late Terms dialog renders. Require a short
-        // quiet period without Terms before attaching.
-        if (await waitFor(termsShown, TERMS_SETTLE_MS)) {
+        if (!found) throw new Error("file input not found");
+        // First visit: the input can exist before a late Terms dialog renders.
+        if (!termsAcceptedStored() && (await waitFor(termsShown, TERMS_SETTLE_MS))) {
           if (dismissed) return;
-          termsSeen = true;
           continue;
         }
         if (dismissed) return;
@@ -243,12 +243,7 @@
 
       const signIn = !!(await waitFor(signInShown, SIGN_IN_WATCH_MS));
       if (dismissed) return;
-      let ok = true;
-      try {
-        await send({ type: "synthid:attached", signInRequired: signIn });
-      } catch (e) {
-        ok = false;
-      }
+      send({ type: "synthid:attached", signInRequired: signIn }).catch(() => {});
       if (signIn) {
         show({
           state: "warn",
@@ -257,14 +252,16 @@
           actions: actionsAfter([{ id: "retry", label: "Retry", primary: true }]),
         });
       } else {
-        show({
-          state: "success",
-          title: "File attached",
-          message: ok
-            ? "Your file was added to the upload form. The result appears on the page."
-            : "Your file was added to the upload form.",
-          actions: actionsAfter([{ id: "attach", label: "Attach again" }]),
-        });
+        show({ state: "success", title: "File attached", message: "The result appears on the page." });
+        hideTimer = setTimeout(() => {
+          try {
+            Banner.hide();
+          } catch (e) {
+            // ignore
+          }
+          // Done: a later reload of synthid.com shouldn't offer this file again.
+          send({ type: "synthid:clear" }).catch(() => {});
+        }, SUCCESS_HIDE_MS);
       }
     } catch (e) {
       if (dismissed) return;
@@ -317,6 +314,7 @@
   function onAction(id) {
     if (id === "dismiss") {
       dismissed = true;
+      clearTimeout(hideTimer);
       send({ type: "synthid:clear" }).catch(() => {});
     } else if (id === "retry" || id === "attach") {
       run();
@@ -325,14 +323,31 @@
     }
   }
 
+  // At document_start the root element may not exist yet (Firefox guarantees it, other
+  // injectors don't). The banner and observers need it.
+  function documentRoot() {
+    if (document.documentElement) return Promise.resolve();
+    return new Promise((resolve) => {
+      const mo = new MutationObserver(() => {
+        if (document.documentElement) {
+          mo.disconnect();
+          resolve();
+        }
+      });
+      mo.observe(document, { childList: true });
+    });
+  }
+
   async function main() {
     let res;
     try {
+      // Runs at document_start, so the file transfer overlaps with the page loading.
       res = await send({ type: "synthid:getPending" });
     } catch (e) {
       return;
     }
     if (!res || !res.found || !res.blob) return;
+    await documentRoot();
     file = new File([res.blob], res.name || "synthid-check", { type: res.type || res.blob.type || "" });
     Banner.onAction(onAction);
 
