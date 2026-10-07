@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SynthID Check",
   "version": "0.1.0",
-  "description": "Drag an image onto the drop box, or right-click any image, video or audio, to check it for a SynthID watermark on synthid.com.",
+  "description": "Checks images, video and audio for a SynthID watermark, the invisible mark that Google's AI tools and partners such as OpenAI add. Drag an image onto the box that appears in the corner, or right-click any image, video or audio and choose \"Check with SynthID\". If a site covers its media, right-click the spot and choose \"Find media under the cursor\", or use \"Pick media on this page\" in the toolbar menu. The file opens in Google's detector at synthid.com, where you sign in and see the result. Only SynthID watermarks can be detected: no watermark doesn't prove a person made it. Text can't be checked.",
   "icons": {
     "48": "icons/icon.svg",
     "96": "icons/icon.svg"
