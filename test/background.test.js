@@ -1530,3 +1530,35 @@ test("synthid:dropped with no media sends no notice and opens nothing", async ()
   assert.equal(env.calls.tabsCreate.length, 0);
   assert.equal(env.calls.fetch.length, 0);
 });
+
+const OPTIONS_URL = EXT_BASE + "src/options/options.html";
+
+test("synthid:syncDropZone from the options page re-syncs the registration and replies ok", async () => {
+  const env = await loadBackground({ syncStorage: { dropZone: false } });
+  assert.equal(env.registeredScripts.size, 0);
+  env.syncStorage.dropZone = true;
+  const reply = await env.send({ type: "synthid:syncDropZone" }, { id: EXT_ID, url: OPTIONS_URL + "?x=1" });
+  assert.deepEqual(reply, { ok: true });
+  assert.equal(env.registeredScripts.size, 1, "registered by the time the reply arrives");
+
+  env.syncStorage.dropZone = false;
+  assert.deepEqual(await env.send({ type: "synthid:syncDropZone" }, { id: EXT_ID, url: OPTIONS_URL }), { ok: true });
+  assert.equal(env.registeredScripts.size, 0);
+});
+
+test("synthid:syncDropZone from any other sender is refused and changes nothing", async () => {
+  const env = await loadBackground({ syncStorage: { dropZone: false } });
+  env.syncStorage.dropZone = true;
+  const tab = env.addTab(sourceTab());
+  for (const sender of [
+    { id: EXT_ID, url: POPUP_URL },
+    { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 },
+    { id: EXT_ID, url: "https://evil.example/" + "src/options/options.html" },
+    { id: EXT_ID },
+  ]) {
+    assert.deepEqual(await env.send({ type: "synthid:syncDropZone" }, sender), { ok: false });
+  }
+  await tick();
+  assert.equal(env.registeredScripts.size, 0);
+  assert.deepEqual(env.scriptingLog.filter((x) => x !== "get"), []);
+});

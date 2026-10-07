@@ -13,7 +13,8 @@ const { implForWrapper } = require("jsdom/lib/generated/idl/utils.js");
 const RESOLVE_SRC = fs.readFileSync(path.join(__dirname, "../src/content/resolve.js"), "utf8");
 const DROPZONE_SRC = fs.readFileSync(path.join(__dirname, "../src/content/dropzone.js"), "utf8");
 const NATIVE_IMAGE = "application/x-moz-nativeimage";
-const HOST = "synthid-check-dropzone";
+const HOST = '[data-synthid-picker="dropzone"]';
+const PROBE = '[data-synthid-picker="probe"]';
 
 let dom;
 let messages;
@@ -50,8 +51,8 @@ function dispatchTrusted(target, event) {
   return impl._dispatch(implForWrapper(trusted(event)));
 }
 
-function makeEvent(w, type, { target, types, effectAllowed, buttons, clientX = 10, clientY = 10, isTrusted = true } = {}) {
-  const e = new w.MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, buttons: buttons ?? 0 });
+function makeEvent(w, type, { target, types, effectAllowed, buttons, clientX = 10, clientY = 10, isTrusted = true, composed = false } = {}) {
+  const e = new w.MouseEvent(type, { bubbles: true, composed, cancelable: true, clientX, clientY, buttons: buttons ?? 0 });
   if (types || effectAllowed) {
     Object.defineProperty(e, "dataTransfer", {
       value: { types: types || [], effectAllowed: effectAllowed || "uninitialized", dropEffect: "none" },
@@ -69,6 +70,12 @@ function fire(w, target, type, opts = {}) {
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
 const hostEl = (w) => w.document.querySelector(HOST);
+
+// A trusted dragover somewhere else on the page: the pointer left the drag source's area,
+// which arms the zone so a drop on it counts.
+function arm(w) {
+  fire(w, w.document.body, "dragover", { types: [], effectAllowed: "all" });
+}
 
 async function startImageDrag(w, selector = "#img") {
   const img = w.document.querySelector(selector);
@@ -134,6 +141,7 @@ test("a link drag with the native image type uses the image under the point", as
   await tick();
   assert.ok(hostEl(w));
   // And the drop carries that image.
+  arm(w);
   fire(w, hostEl(w), "drop");
   assert.deepEqual(JSON.parse(JSON.stringify(messages)), [{ type: "synthid:dropped", media: EXPECTED_MEDIA }]);
 });
@@ -178,6 +186,7 @@ test("a frame smaller than 240x160 shows nothing; exactly 240x160 does", async (
 test("dragover on the zone is cancelled, gets a drop effect, and never reaches the page", async () => {
   const w = setup(IMG);
   await startImageDrag(w);
+  arm(w);
   let pageSaw = 0;
   w.addEventListener("dragover", () => pageSaw++);
   w.addEventListener("dragover", () => pageSaw++, true);
@@ -194,6 +203,7 @@ test("dragover on the zone is cancelled, gets a drop effect, and never reaches t
 test("the drop effect respects effectAllowed", async () => {
   const w = setup(IMG);
   await startImageDrag(w);
+  arm(w);
   const expected = { none: "none", copy: "copy", copyMove: "copy", link: "link", linkMove: "link", move: "move", uninitialized: "copy" };
   for (const [allowed, effect] of Object.entries(expected)) {
     const e = fire(w, hostEl(w), "dragover", { types: [], effectAllowed: allowed });
@@ -214,7 +224,8 @@ test("dragover elsewhere on the page is untouched", async () => {
 
 test("dragover on the zone does nothing when no zone is shown (no drag)", async () => {
   const w = setup(IMG);
-  const probe = w.document.createElement(HOST);
+  const probe = w.document.createElement("div");
+  probe.setAttribute("data-synthid-picker", "dropzone");
   w.document.body.appendChild(probe);
   const e = fire(w, probe, "dragover", { types: [], effectAllowed: "all" });
   assert.equal(e.defaultPrevented, false);
@@ -223,6 +234,7 @@ test("dragover on the zone does nothing when no zone is shown (no drag)", async 
 test("untrusted dragover on the zone is not accepted", async () => {
   const w = setup(IMG);
   await startImageDrag(w);
+  arm(w);
   const e = fire(w, hostEl(w), "dragover", { types: [], effectAllowed: "all", isTrusted: false });
   assert.equal(e.defaultPrevented, false);
 });
@@ -230,6 +242,7 @@ test("untrusted dragover on the zone is not accepted", async () => {
 test("dropping on the zone sends one synthid:dropped message, removes the zone and hides the drop from the page", async () => {
   const w = setup(IMG);
   await startImageDrag(w);
+  arm(w);
   let pageSaw = 0;
   w.addEventListener("drop", () => pageSaw++);
   w.document.addEventListener("drop", () => pageSaw++);
@@ -248,6 +261,7 @@ test("a rejected sendMessage promise is swallowed", async () => {
   const w = setup(IMG);
   w.browser.runtime.sendMessage = () => Promise.reject(new Error("no receiver"));
   await startImageDrag(w);
+  arm(w);
   fire(w, hostEl(w), "drop");
   await tick();
   assert.equal(hostEl(w), null);
@@ -310,6 +324,7 @@ test("pagehide hides the zone", async () => {
 test("an untrusted drop on the zone is ignored", async () => {
   const w = setup(IMG);
   await startImageDrag(w);
+  arm(w);
   const drop = fire(w, hostEl(w), "drop", { isTrusted: false });
   assert.equal(drop.defaultPrevented, false);
   assert.ok(hostEl(w));
@@ -321,6 +336,7 @@ test("a new drag replaces the previous zone (one host at a time)", async () => {
   await startImageDrag(w);
   await startImageDrag(w, "#img2");
   assert.equal(w.document.querySelectorAll(HOST).length, 1);
+  arm(w);
   fire(w, hostEl(w), "drop");
   assert.equal(messages.length, 1);
   assert.equal(messages[0].media.url, "https://example.com/dog.png");
@@ -342,6 +358,195 @@ test("loading the script twice is idempotent: one set of listeners", async () =>
   assert.equal(w.SynthIDDropZone, first);
   await startImageDrag(w);
   assert.equal(w.document.querySelectorAll(HOST).length, 1);
+  arm(w);
   fire(w, hostEl(w), "drop");
   assert.equal(messages.length, 1);
+});
+
+test("dragover on the zone before arming is not cancelled and reaches the page", async () => {
+  const w = setup(IMG);
+  await startImageDrag(w);
+  let pageSaw = 0;
+  w.addEventListener("dragover", () => pageSaw++);
+  const e = fire(w, hostEl(w), "dragover", { types: [], effectAllowed: "all" });
+  assert.equal(e.defaultPrevented, false);
+  assert.equal(e.dataTransfer.dropEffect, "none");
+  assert.equal(pageSaw, 1);
+  // Entering elsewhere arms it; then the zone accepts.
+  arm(w);
+  assert.equal(fire(w, hostEl(w), "dragenter", { types: [], effectAllowed: "all" }).defaultPrevented, true);
+});
+
+test("drop on the zone before arming is swallowed, hides the zone and sends nothing", async () => {
+  const w = setup(IMG);
+  await startImageDrag(w);
+  let pageSaw = 0;
+  w.addEventListener("drop", () => pageSaw++);
+  const drop = fire(w, hostEl(w), "drop");
+  assert.equal(drop.defaultPrevented, true);
+  assert.equal(pageSaw, 0);
+  assert.equal(hostEl(w), null);
+  assert.deepEqual(messages, []);
+});
+
+test("arming needs a trusted enter/over: an untrusted one elsewhere does not arm", async () => {
+  const w = setup(IMG);
+  await startImageDrag(w);
+  fire(w, w.document.body, "dragover", { isTrusted: false });
+  fire(w, hostEl(w), "drop");
+  assert.deepEqual(messages, []);
+});
+
+test("a new drag resets arming", async () => {
+  const w = setup(IMG);
+  await startImageDrag(w);
+  arm(w);
+  await startImageDrag(w);
+  fire(w, hostEl(w), "drop");
+  assert.deepEqual(messages, []);
+});
+
+test("an untrusted pagehide does not hide the zone", async () => {
+  const w = setup(IMG);
+  await startImageDrag(w);
+  w.dispatchEvent(new w.Event("pagehide"));
+  assert.ok(hostEl(w));
+});
+
+test("a trusted mouseup hides the zone; an untrusted one does not", async () => {
+  const w = setup(IMG);
+  await startImageDrag(w);
+  fire(w, w.document.body, "mouseup", { buttons: 0, isTrusted: false });
+  assert.ok(hostEl(w));
+  fire(w, w.document.body, "mouseup", { buttons: 0 });
+  assert.equal(hostEl(w), null);
+});
+
+test("an image inside an open shadow root is found through composedPath", async () => {
+  const w = setup('<div id="h"></div>');
+  const root = w.document.getElementById("h").attachShadow({ mode: "open" });
+  root.innerHTML = '<img id="inner" src="https://example.com/inner.png">';
+  const img = root.getElementById("inner");
+  dispatchTrusted(img, makeEvent(w, "dragstart", { composed: true }));
+  await tick();
+  assert.ok(hostEl(w));
+  arm(w);
+  fire(w, hostEl(w), "drop");
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].media.url, "https://example.com/inner.png");
+});
+
+test("only http(s), data and blob image URLs show the zone", async () => {
+  for (const [url, shown] of [
+    ["file:///home/user/cat.png", false],
+    ["about:blank", false],
+    ["ftp://example.com/cat.png", false],
+    ["https://example.com/cat.png", true],
+    ["http://example.com/cat.png", true],
+    ["data:image/png;base64,AAAA", true],
+    ["blob:https://example.com/abc", true],
+  ]) {
+    const w = setup(`<img id="img" src="${url}">`);
+    await startImageDrag(w);
+    assert.equal(Boolean(hostEl(w)), shown, url);
+    w.close();
+  }
+});
+
+test("the zone is not shown if the drag ends before the deferred show", async () => {
+  const w = setup(IMG);
+  fire(w, w.document.getElementById("img"), "dragstart");
+  w.SynthIDDropZone.hide();
+  await tick();
+  assert.equal(hostEl(w), null);
+});
+
+// --- Subframes: visible area comes from an IntersectionObserver on a probe element.
+
+function setupFrame({ rect, intersecting = true, noObserver = false }) {
+  const parent = new JSDOM("<!doctype html><body></body>", { url: "https://example.com/", runScripts: "outside-only" });
+  dom = parent;
+  const iframe = parent.window.document.createElement("iframe");
+  parent.window.document.body.appendChild(iframe);
+  const w = iframe.contentWindow;
+  assert.notEqual(w, w.top, "the iframe window is a subframe");
+  messages = [];
+  w.browser = { runtime: { sendMessage: (m) => (messages.push(m), Promise.resolve()) } };
+  Object.defineProperty(w, "innerWidth", { value: 1000, configurable: true });
+  Object.defineProperty(w, "innerHeight", { value: 800, configurable: true });
+  const probesSeen = [];
+  w.__probes = probesSeen;
+  if (!noObserver) {
+    w.IntersectionObserver = class {
+      constructor(cb) {
+        this.cb = cb;
+        this.disconnected = false;
+      }
+      observe(el) {
+        probesSeen.push(el.getAttribute("data-synthid-picker"));
+        Promise.resolve().then(() => {
+          if (!this.disconnected) this.cb([{ isIntersecting: intersecting, intersectionRect: rect }]);
+        });
+      }
+      disconnect() {
+        this.disconnected = true;
+      }
+    };
+  }
+  w.eval(RESOLVE_SRC);
+  w.eval(DROPZONE_SRC);
+  w.document.body.innerHTML = IMG;
+  return w;
+}
+
+const rect = (left, top, right, bottom) => ({ left, top, right, bottom });
+
+test("subframe: not intersecting shows nothing and removes the probe", async () => {
+  const w = setupFrame({ rect: rect(0, 0, 0, 0), intersecting: false });
+  await startImageDrag(w);
+  assert.deepEqual(w.__probes, ["probe"]);
+  assert.equal(hostEl(w), null);
+  assert.equal(w.document.querySelector(PROBE), null);
+});
+
+test("subframe: a visible area below 240x160 shows nothing", async () => {
+  for (const r of [rect(0, 0, 239, 500), rect(0, 0, 500, 159)]) {
+    const w = setupFrame({ rect: r });
+    await startImageDrag(w);
+    assert.equal(hostEl(w), null);
+    assert.equal(w.document.querySelector(PROBE), null);
+    dom.window.close();
+  }
+});
+
+test("subframe: the visible area is clipped to the viewport", async () => {
+  const w = setupFrame({ rect: rect(0, 0, 5000, 100) });
+  await startImageDrag(w);
+  assert.equal(hostEl(w), null);
+});
+
+test("subframe: a big enough visible area shows the zone and removes the probe", async () => {
+  const w = setupFrame({ rect: rect(0, 0, 400, 300) });
+  await startImageDrag(w);
+  assert.ok(hostEl(w));
+  assert.equal(w.document.querySelector(PROBE), null);
+  arm(w);
+  fire(w, hostEl(w), "drop");
+  assert.equal(messages.length, 1);
+});
+
+test("subframe: hiding before the observer reports shows nothing", async () => {
+  const w = setupFrame({ rect: rect(0, 0, 400, 300) });
+  fire(w, w.document.getElementById("img"), "dragstart");
+  await new Promise((r) => setTimeout(r, 0));
+  w.SynthIDDropZone.hide();
+  await tick();
+  assert.equal(hostEl(w), null);
+  assert.equal(w.document.querySelector(PROBE), null);
+});
+
+test("subframe without IntersectionObserver falls back to the viewport size", async () => {
+  const w = setupFrame({ rect: rect(0, 0, 0, 0), noObserver: true });
+  await startImageDrag(w);
+  assert.ok(hostEl(w));
 });
