@@ -55,10 +55,8 @@ const Pending = {
 };
 
 const SYNTHID_URL = "https://synthid.com/";
-const GRANT_PAGE = "src/grant/grant.html";
 const POPUP_PAGE = "src/popup/popup.html";
-const GRANT_KEY_PREFIX = "grant:";
-const GRANT_TTL_MS = 30 * 60 * 1000;
+const ALL_SITES = "<all_urls>";
 const WORKING_NOTICE_DELAY_MS = 800;
 const DEFAULT_SETTINGS = { openInForeground: true };
 
@@ -70,7 +68,9 @@ const TEXT = {
   unsupported: (what) =>
     "SynthID can check JPG, PNG, WebP, GIF, AVIF, HEIC, TIFF, BMP images, MP3/WAV/OGG/FLAC/AAC/M4A audio " +
     `and MP4/MOV/WebM video. This file is ${what}.`,
-  declined: (host) => `SynthID Check needs permission to download this file from ${host}.`,
+  siteAccess:
+    "SynthID Check needs access to websites to download this file. " +
+    "Allow it in the extension's settings (about:addons → SynthID Check → Permissions).",
   fetchFailed: (status) =>
     `Couldn't download the file (${status}). Try saving it and uploading it on synthid.com.`,
   tooLarge: (mb) => `This file is larger than ${mb} MB. Try a smaller file.`,
@@ -96,48 +96,55 @@ class Notice extends Error {
 class NetworkError extends Error {}
 
 // ---------------------------------------------------------------------------
-// Permission cache: menus.onClicked must call permissions.request() before any
-// await, so it needs a synchronous answer to "is this origin granted already?".
+// Site access. <all_urls> is a required host permission, granted at install.
+// Firefox lets users revoke it later, so keep a synchronous cache of whether it
+// is granted: user-action handlers must call permissions.request() before any
+// await, and need an immediate answer to "do we have access already?".
 
-const grantCache = { loaded: false, all: false, patterns: [] };
+const siteAccess = { all: false };
 
-function refreshGrantCache() {
+function hasAllSites(origins) {
+  return (origins || []).some((o) => o === ALL_SITES || o === "*://*/*");
+}
+
+function refreshSiteAccess() {
   return browser.permissions.getAll().then((perms) => {
-    const origins = perms.origins || [];
-    grantCache.all = origins.some((o) => o === "<all_urls>" || o === "*://*/*");
-    grantCache.patterns = origins.map(parsePattern).filter(Boolean);
-    grantCache.loaded = true;
+    siteAccess.all = hasAllSites(perms.origins);
   }, (e) => console.warn("SynthID Check: permissions.getAll failed", e));
 }
 
-function parsePattern(pattern) {
-  const m = /^(\*|https?):\/\/([^/]+)\//.exec(pattern);
-  return m ? { scheme: m[1], host: m[2] } : null;
-}
+refreshSiteAccess();
+browser.permissions.onAdded.addListener((perms) => {
+  if (hasAllSites(perms && perms.origins)) siteAccess.all = true;
+  refreshSiteAccess();
+});
+browser.permissions.onRemoved.addListener((perms) => {
+  if (hasAllSites(perms && perms.origins)) siteAccess.all = false;
+  refreshSiteAccess();
+});
 
-function isKnownGranted(url) {
-  if (grantCache.all) return true;
-  let u;
+// If access to all sites is missing, ask for it. Call this synchronously from a
+// user-action handler (before any await). Never rejects; resolves to whether
+// access is granted. Callers continue either way: the same-origin in-page fetch
+// works without it, and getFile shows a notice when a download needs it.
+function requestSiteAccess() {
+  if (siteAccess.all) return Promise.resolve(true);
   try {
-    u = new URL(url);
-  } catch {
-    return false;
+    return browser.permissions.request({ origins: [ALL_SITES] }).then(
+      (granted) => {
+        if (granted) siteAccess.all = true;
+        return Boolean(granted);
+      },
+      (e) => {
+        console.warn("SynthID Check: permissions.request failed", e);
+        return false;
+      },
+    );
+  } catch (e) {
+    console.warn("SynthID Check: permissions.request failed", e);
+    return Promise.resolve(false);
   }
-  const scheme = u.protocol.slice(0, -1);
-  return grantCache.patterns.some((p) => {
-    if (p.scheme !== "*" && p.scheme !== scheme) return false;
-    if (p.host === "*") return true;
-    if (p.host.startsWith("*.")) {
-      const base = p.host.slice(2);
-      return u.hostname === base || u.hostname.endsWith("." + base);
-    }
-    return p.host === u.hostname;
-  });
 }
-
-refreshGrantCache();
-browser.permissions.onAdded.addListener(refreshGrantCache);
-browser.permissions.onRemoved.addListener(refreshGrantCache);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -151,14 +158,6 @@ function sameOrigin(a, b) {
     return new URL(a).origin === new URL(b).origin;
   } catch {
     return false;
-  }
-}
-
-function hostOf(url) {
-  try {
-    return new URL(url).hostname || url;
-  } catch {
-    return url;
   }
 }
 
@@ -280,11 +279,14 @@ browser.runtime.onStartup.addListener(() => {
 
 browser.menus.onClicked.addListener((info, tab) => {
   if (!tab || tab.id == null || tab.id < 0) return;
-  if (info.menuItemId === "check-media") onCheckMedia(info, tab);
-  else if (info.menuItemId === "find-media") onFindMedia(info, tab);
+  if (info.menuItemId !== "check-media" && info.menuItemId !== "find-media") return;
+  // Synchronously, before any await: only a user-action handler may prompt.
+  const access = requestSiteAccess();
+  if (info.menuItemId === "check-media") onCheckMedia(info, tab, access);
+  else onFindMedia(info, tab, access);
 });
 
-function onCheckMedia(info, tab) {
+function onCheckMedia(info, tab, access) {
   const url = info.srcUrl;
   const frameId = info.frameId ?? 0;
   const pageUrl = info.pageUrl || tab.url;
@@ -292,34 +294,15 @@ function onCheckMedia(info, tab) {
 
   // No usable URL (or a blob: URL): let resolve.js inspect the element instead.
   if (!url || /^blob:/i.test(url)) {
-    onFindMedia(info, tab);
+    onFindMedia(info, tab, access);
     return;
   }
 
   const media = { kind: info.mediaType || "image", url, isBlob: false, isMediaSource: false };
-
-  // activeTab covers the top-level tab's origin only, not a cross-origin frame's.
-  if (isHttp(url) && !isKnownGranted(url) && !sameOrigin(url, pageUrl)) {
-    const pattern = Media.originPattern(url);
-    // Must run synchronously inside the click handler. If the origin is
-    // already granted (cache not loaded yet), this resolves true at once.
-    browser.permissions.request({ origins: [pattern] }).then(
-      (granted) => {
-        if (granted) acquire(media, ctx);
-        else notify(tab.id, { state: "warn", message: TEXT.declined(hostOf(url)) });
-      },
-      (e) => {
-        console.warn("SynthID Check: permissions.request failed", e);
-        acquire(media, ctx);
-      },
-    );
-    return;
-  }
-
-  acquire(media, ctx);
+  access.then(() => acquire(media, ctx));
 }
 
-async function onFindMedia(info, tab) {
+async function onFindMedia(info, tab, access = Promise.resolve(true)) {
   const frameId = info.frameId ?? 0;
   const pageUrl = info.pageUrl || tab.url;
   const ctx = { tab, frameId, frameUrl: info.frameUrl || pageUrl, pageUrl };
@@ -344,6 +327,7 @@ async function onFindMedia(info, tab) {
     notify(tab.id, { state: "info", message: TEXT.nothingFound });
     return;
   }
+  await access; // the permission prompt, if any, was raised by the click
   acquire(media, ctx);
 }
 
@@ -377,6 +361,8 @@ async function startPicker(tabId) {
 
 browser.commands.onCommand.addListener(async (name, tab) => {
   if (name !== "start-picker") return;
+  // Synchronously, before any await. Not awaited: pick mode starts regardless.
+  requestSiteAccess();
   let tabId = tab?.id;
   if (typeof tabId !== "number") {
     const [active] = await browser.tabs.query({ active: true, currentWindow: true });
@@ -400,10 +386,8 @@ async function acquire(media, ctx) {
 
   try {
     const file = await getFile(media, ctx);
-    if (file) {
-      const checked = validate(file, media.url);
-      await openSynthId(checked, sourceUrlFor(media, ctx), ctx.tab);
-    } // else: deferred to the grant page.
+    const checked = validate(file, media.url);
+    await openSynthId(checked, sourceUrlFor(media, ctx), ctx.tab);
     finished = true;
     if (workingShown) hideNotice(tabId);
   } catch (e) {
@@ -440,11 +424,10 @@ async function getFile(media, ctx) {
 
   if (!isHttp(url)) throw new Notice(TEXT.unsupportedUrl);
 
-  const pattern = Media.originPattern(url);
-  let granted = isKnownGranted(url);
+  let granted = siteAccess.all;
   if (!granted) {
     try {
-      granted = await browser.permissions.contains({ origins: [pattern] });
+      granted = await browser.permissions.contains({ origins: [ALL_SITES] });
     } catch {
       granted = false;
     }
@@ -453,10 +436,8 @@ async function getFile(media, ctx) {
     try {
       return await fetchInBackground(url);
     } catch (e) {
-      // E.g. a redirect to a host we have no permission for. Fall back once;
-      // after the grant page there is no second fallback.
+      // E.g. a redirect to a host we have no permission for. Fall back once.
       if (!(e instanceof NetworkError)) throw e;
-      if (ctx.fromGrant) throw new Notice(TEXT.fetchFailed("network error"));
       console.warn("SynthID Check: background fetch failed, trying the fallback", e);
     }
   }
@@ -476,10 +457,8 @@ async function getFile(media, ctx) {
     if (result) return result;
   }
 
-  // The grant page can only help when the origin isn't granted yet.
-  if (ctx.fromGrant || granted) throw new Notice(TEXT.fetchFailed("network error"));
-  await openGrantPage(media, ctx, pattern);
-  return null;
+  if (granted) throw new Notice(TEXT.fetchFailed("network error"));
+  throw new Notice(TEXT.siteAccess, "warn");
 }
 
 async function fetchInBackground(url) {
@@ -655,88 +634,10 @@ function openSynthId(file, sourceUrl, sourceTab) {
 }
 
 // ---------------------------------------------------------------------------
-// Grant page: used when the permission couldn't be requested inside a click.
-
-const grantRequests = new Map();
-
-async function openGrantPage(media, ctx, pattern) {
-  const requestId = crypto.randomUUID();
-  const entry = {
-    media: { kind: media.kind, url: media.url, isBlob: false, isMediaSource: false },
-    tabId: ctx.tab.id,
-    frameId: ctx.frameId,
-    frameUrl: ctx.frameUrl,
-    pattern,
-    createdAt: Date.now(),
-  };
-  grantRequests.set(requestId, entry);
-  try {
-    await pruneGrantRequests();
-    await browser.storage.session.set({ [GRANT_KEY_PREFIX + requestId]: entry });
-  } catch (e) {
-    console.warn("SynthID Check: storage.session unavailable", e);
-  }
-  const params = new URLSearchParams({ origin: pattern, id: requestId });
-  await createTabNear(ctx.tab, {
-    url: browser.runtime.getURL(GRANT_PAGE) + "?" + params,
-    active: true,
-  });
-}
-
-async function pruneGrantRequests() {
-  const all = await browser.storage.session.get(null);
-  const now = Date.now();
-  const stale = Object.keys(all).filter(
-    (k) => k.startsWith(GRANT_KEY_PREFIX) && !(now - (all[k] && all[k].createdAt) < GRANT_TTL_MS),
-  );
-  if (stale.length) await browser.storage.session.remove(stale);
-}
-
-async function takeGrantRequest(requestId) {
-  const key = GRANT_KEY_PREFIX + requestId;
-  let entry = grantRequests.get(requestId) || null;
-  grantRequests.delete(requestId);
-  try {
-    if (!entry) entry = (await browser.storage.session.get(key))[key] || null;
-    await browser.storage.session.remove(key);
-  } catch {
-    // Memory copy is enough.
-  }
-  if (entry && Date.now() - entry.createdAt > GRANT_TTL_MS) return null;
-  return entry;
-}
-
-async function onGranted(requestId) {
-  if (typeof requestId !== "string") return { ok: false };
-  const entry = await takeGrantRequest(requestId);
-  if (!entry) return { ok: false };
-  const granted = await browser.permissions.contains({ origins: [entry.pattern] }).catch(() => false);
-  if (!granted) return { ok: false };
-  let tab;
-  try {
-    tab = await browser.tabs.get(entry.tabId);
-  } catch {
-    return { ok: false };
-  }
-  acquire(entry.media, {
-    tab,
-    frameId: entry.frameId,
-    frameUrl: entry.frameUrl,
-    pageUrl: tab.url,
-    fromGrant: true,
-  });
-  return { ok: true };
-}
-
-// ---------------------------------------------------------------------------
 // Messages
 
 function isFromSynthId(sender) {
   return sender.tab && typeof sender.url === "string" && sender.url.startsWith(SYNTHID_URL);
-}
-
-function isFromGrantPage(sender) {
-  return typeof sender.url === "string" && sender.url.startsWith(browser.runtime.getURL(GRANT_PAGE));
 }
 
 function isFromPopup(sender) {
@@ -808,13 +709,6 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     case "synthid:startPicker":
       if (!isFromPopup(sender)) return Promise.resolve({ ok: false });
       return startPicker(msg.tabId).then((ok) => ({ ok }));
-
-    case "synthid:granted":
-      if (!isFromGrantPage(sender)) return Promise.resolve({ ok: false });
-      return onGranted(msg.requestId).catch((e) => {
-        console.warn("SynthID Check: resuming after grant failed", e);
-        return { ok: false };
-      });
 
     default:
       return undefined;

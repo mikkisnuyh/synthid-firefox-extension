@@ -25,12 +25,14 @@ const SCRIPTS = MANIFEST.background.scripts;
 
 const EXT_ID = "@synthid-check";
 const EXT_BASE = "moz-extension://test-uuid/";
+const POPUP_URL = EXT_BASE + "src/popup/popup.html";
 const SYNTHID_URL = "https://synthid.com/";
 const SYNTHID_PATTERN = "https://synthid.com/*";
+const ALL_URLS = "<all_urls>";
+const ALL_SITES_REQUEST = { origins: [ALL_URLS] };
 
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8, 250, 251]);
 const CDN_PNG = "https://cdn.example.com/img/cat.png";
-const CDN_PATTERN = "https://cdn.example.com/*";
 const PAGE_URL = "https://example.com/page";
 
 // ---------------------------------------------------------------------------
@@ -82,7 +84,9 @@ function makeEnv(opts = {}) {
     consoleWarn: [],
     consoleError: [],
   };
+  // Default install: access to all websites is granted up front.
   const granted = new Set(opts.granted || []);
+  if (opts.allSites !== false) granted.add(ALL_URLS);
   if (opts.synthidGranted !== false) granted.add(SYNTHID_PATTERN);
 
   const env = {
@@ -95,7 +99,6 @@ function makeEnv(opts = {}) {
     tabs: new Map(),
     nextTabId: 100,
     syncStorage: { ...(opts.syncStorage || {}) },
-    sessionStorage: {},
     requestResult: opts.requestResult ?? true, // what permissions.request resolves to
     inListener: false,
     // Per-test scripted behaviour.
@@ -124,9 +127,17 @@ function makeEnv(opts = {}) {
     return full;
   };
 
+  // Like the user toggling site access in about:addons: the browser fires the event.
   env.grant = async (pattern) => {
     granted.add(pattern);
     events.permissionsOnAdded.fire({ origins: [pattern] });
+    await Promise.all(env.getAllPromises);
+    await tick();
+  };
+  env.revoke = async (pattern) => {
+    granted.delete(pattern);
+    events.permissionsOnRemoved.fire({ origins: [pattern] });
+    await Promise.all(env.getAllPromises);
     await tick();
   };
 
@@ -209,21 +220,6 @@ function makeEnv(opts = {}) {
       sync: {
         get: async (defaults) => ({ ...defaults, ...env.syncStorage }),
       },
-      session: {
-        get: async (keys) => {
-          if (keys == null) return { ...env.sessionStorage };
-          const list = typeof keys === "string" ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys);
-          const out = {};
-          for (const k of list) if (k in env.sessionStorage) out[k] = env.sessionStorage[k];
-          return out;
-        },
-        set: async (items) => {
-          Object.assign(env.sessionStorage, structuredClone(items));
-        },
-        remove: async (keys) => {
-          for (const k of [].concat(keys)) delete env.sessionStorage[k];
-        },
-      },
     },
   };
   env.browser = browser;
@@ -235,17 +231,22 @@ function makeEnv(opts = {}) {
     return results[0];
   };
   env.synthidSender = (tabId, url = SYNTHID_URL) => ({ id: EXT_ID, url, tab: { id: tabId } });
-  env.grantSender = (query = "") => ({
-    id: EXT_ID,
-    url: EXT_BASE + "src/grant/grant.html" + query,
-    tab: { id: 999 },
-  });
 
   // Fire menus.onClicked while flagging that we are inside the listener call.
   env.click = (info, tab) => {
     env.inListener = true;
     try {
       events.menusOnClicked.fire(info, tab);
+    } finally {
+      env.inListener = false;
+    }
+  };
+
+  // Fire commands.onCommand while flagging that we are inside the listener call.
+  env.command = (name, tab) => {
+    env.inListener = true;
+    try {
+      events.commandsOnCommand.fire(name, tab);
     } finally {
       env.inListener = false;
     }
@@ -295,7 +296,7 @@ async function loadBackground(opts) {
     const file = path.join(ROOT, rel);
     new vm.Script(fs.readFileSync(file, "utf8"), { filename: file }).runInContext(env.context);
   }
-  // Let the startup permissions.getAll() refresh settle so the grant cache is warm.
+  // Let the startup permissions.getAll() refresh settle so the access cache is warm.
   await Promise.all(env.getAllPromises);
   await tick();
   return env;
@@ -388,10 +389,10 @@ test("onInstalled creates the two menu items with the contract ids and contexts"
 });
 
 // ---------------------------------------------------------------------------
-// 2. check-media, origin already granted
+// 2. Default install: access to all websites is granted, no prompts
 
-test("check-media on a granted origin fetches in the background and opens synthid.com with the file pending", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+test("default install: a cross-origin image is fetched in the background without any permission request", async () => {
+  const env = await loadBackground();
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
 
@@ -428,7 +429,7 @@ test("check-media on a granted origin fetches in the background and opens synthi
 });
 
 test("openInForeground=false opens synthid.com in the background", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN], syncStorage: { openInForeground: false } });
+  const env = await loadBackground({ syncStorage: { openInForeground: false } });
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
   env.click(imageClick(CDN_PNG), tab);
@@ -436,28 +437,58 @@ test("openInForeground=false opens synthid.com in the background", async () => {
   assert.equal(env.calls.tabsCreate[0].active, false);
 });
 
-test("same-origin image needs no permission request (activeTab)", async () => {
+test("default install: find-media with a cross-origin result fetches in the background, no request", async () => {
   const env = await loadBackground();
+  env.scriptHandler = findMediaScript({ kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false });
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
-  // Not granted, but same origin as the page: the background fetch is skipped and
-  // the page itself fetches (activeTab); script it to return the bytes.
-  env.scriptHandler = (d) =>
-    d.func ? [{ result: { ok: true, blob: new Blob([PNG], { type: "image/png" }), type: "image/png", url: "https://example.com/a.png" } }] : [{}];
-  env.click(imageClick("https://example.com/a.png"), tab);
-  await waitFor(() => env.createdTabs.length === 1, "synthid tab");
+  env.click({ menuItemId: "find-media", pageUrl: PAGE_URL, frameId: 0, targetElementId: 42 }, tab);
+  await waitFor(() => env.synthidTabs().length === 1, "synthid tab");
+
   assert.equal(env.calls.permissionsRequest.length, 0);
-  const reply = await getPending(env, env.createdTabs[0].id);
-  assert.equal(reply.found, true);
-  assert.equal(reply.name, "a.png");
-  assert.deepEqual(await bytesOf(reply.blob), Array.from(PNG));
+  assert.equal(env.calls.fetch.length, 1);
+  assert.equal(env.calls.fetch[0].url, CDN_PNG);
+  // The find-media script was run in the clicked frame with the target element id.
+  const finder = env.calls.executeScript.find((d) => d.func);
+  assert.deepEqual(finder.target, { tabId: 5, frameIds: [0] });
+  assert.deepEqual(finder.args, [42]);
+  const synth = env.calls.tabsCreate[0];
+  assert.deepEqual(synth, { url: SYNTHID_URL, active: true, windowId: 3, index: 3, openerTabId: 5 });
+  const pending = await getPending(env, env.synthidTabs()[0].id);
+  assert.equal(pending.found, true);
+  assert.equal(pending.sourceUrl, CDN_PNG);
+  assert.deepEqual(await bytesOf(pending.blob), Array.from(PNG));
 });
 
-// ---------------------------------------------------------------------------
-// 3. check-media, origin not granted
+for (const variant of [
+  {
+    name: "check-media without srcUrl",
+    info: { menuItemId: "check-media", pageUrl: PAGE_URL, frameId: 0, targetElementId: 42, mediaType: "image" },
+  },
+  {
+    name: "check-media with a blob: srcUrl",
+    info: { menuItemId: "check-media", srcUrl: "blob:https://example.com/xyz", pageUrl: PAGE_URL, frameId: 0, targetElementId: 42 },
+  },
+]) {
+  test(`${variant.name} falls back to finding the media, with no grant page`, async () => {
+    const env = await loadBackground();
+    env.scriptHandler = findMediaScript({ kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false });
+    env.fetchHandler = async () => pngResponse();
+    const tab = env.addTab(sourceTab());
+    env.click(variant.info, tab);
+    await waitFor(() => env.synthidTabs().length === 1, "synthid tab");
+    assert.equal(env.calls.permissionsRequest.length, 0);
+    assert.equal(env.calls.tabsCreate.length, 1);
+    assert.equal(env.calls.tabsCreate[0].url, SYNTHID_URL);
+    assert.equal(env.calls.fetch[0].url, CDN_PNG);
+  });
+}
 
-test("check-media on an ungranted origin calls permissions.request synchronously inside the click", async () => {
-  const env = await loadBackground();
+// ---------------------------------------------------------------------------
+// 3. Site access revoked (Firefox lets users remove <all_urls> after install)
+
+test("access revoked: check-media requests <all_urls> synchronously inside the click, then proceeds when granted", async () => {
+  const env = await loadBackground({ allSites: false });
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
 
@@ -469,46 +500,148 @@ test("check-media on an ungranted origin calls permissions.request synchronously
 
   assert.equal(synchronousCalls, 1, "permissions.request must be called before any await");
   assert.equal(env.calls.permissionsRequest[0].synchronous, true);
-  assert.deepEqual(env.calls.permissionsRequest[0].perms, { origins: [CDN_PATTERN] });
+  assert.deepEqual(env.calls.permissionsRequest[0].perms, ALL_SITES_REQUEST);
   assert.equal(env.calls.fetch.length, 0, "no fetch before the grant resolves");
 
   await waitFor(() => env.createdTabs.length === 1, "synthid tab after grant");
+  assert.equal(env.calls.permissionsRequest.length, 1, "asked exactly once");
   assert.equal(env.calls.fetch.length, 1);
+  assert.equal(env.calls.fetch[0].url, CDN_PNG);
   const reply = await getPending(env, env.createdTabs[0].id);
   assert.equal(reply.found, true);
   assert.deepEqual(await bytesOf(reply.blob), Array.from(PNG));
+  assert.equal(env.calls.tabsCreate.length, 1);
 });
 
-test("declining the permission shows a notice and does not fetch or open synthid.com", async () => {
-  const env = await loadBackground({ requestResult: false });
+test("access revoked: find-media also requests <all_urls> synchronously, then proceeds when granted", async () => {
+  const env = await loadBackground({ allSites: false });
+  env.scriptHandler = findMediaScript({ kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false });
+  env.fetchHandler = async () => pngResponse();
+  const tab = env.addTab(sourceTab());
+
+  env.click({ menuItemId: "find-media", pageUrl: PAGE_URL, frameId: 0, targetElementId: 42 }, tab);
+  assert.equal(env.calls.permissionsRequest.length, 1);
+  assert.equal(env.calls.permissionsRequest[0].synchronous, true);
+  assert.deepEqual(env.calls.permissionsRequest[0].perms, ALL_SITES_REQUEST);
+
+  await waitFor(() => env.synthidTabs().length === 1, "synthid tab");
+  assert.equal(env.calls.permissionsRequest.length, 1);
+  assert.equal(env.calls.fetch[0].url, CDN_PNG);
+  assert.equal(env.calls.tabsCreate.length, 1);
+});
+
+test("access revoked and declined: a cross-origin image gets the access notice, no tab and no grant page", async () => {
+  const env = await loadBackground({ allSites: false, requestResult: false });
   const tab = env.addTab(sourceTab());
   env.click(imageClick(CDN_PNG), tab);
   assert.equal(env.calls.permissionsRequest.length, 1);
 
-  await waitFor(() => bannerCalls(env, 5).length === 1, "declined notice");
+  await waitFor(() => bannerCalls(env, 5).length === 1, "access notice");
   const [notice] = bannerCalls(env, 5);
   assert.equal(notice.args[0].state, "warn");
-  assert.match(notice.args[0].message, /permission to download this file from cdn\.example\.com/);
+  assert.equal(
+    notice.args[0].message,
+    "SynthID Check needs access to websites to download this file. " +
+      "Allow it in the extension's settings (about:addons → SynthID Check → Permissions).",
+  );
   assert.equal(env.calls.fetch.length, 0);
-  assert.equal(env.calls.tabsCreate.length, 0);
+  assert.equal(env.calls.tabsCreate.length, 0, "no synthid.com tab and no grant page");
+  assert.equal(env.calls.permissionsRequest.length, 1, "no second request outside the click");
 });
 
-test("a granted <all_urls> permission counts as known-granted", async () => {
-  const env = await loadBackground({ granted: ["<all_urls>"] });
+test("access revoked and declined: a same-origin image is still fetched inside the page (activeTab)", async () => {
+  const env = await loadBackground({ allSites: false, requestResult: false });
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
+  env.scriptHandler = (d) =>
+    d.func
+      ? [{ result: { ok: true, blob: new Blob([PNG], { type: "image/png" }), type: "image/png", url: "https://example.com/a.png" } }]
+      : [{}];
+  env.click(imageClick("https://example.com/a.png"), tab);
+  await waitFor(() => env.createdTabs.length === 1, "synthid tab");
+
+  assert.equal(env.calls.fetch.length, 0, "no background fetch without access");
+  const inPage = env.calls.executeScript.find((d) => d.func);
+  assert.deepEqual(inPage.target, { tabId: 5, frameIds: [0] });
+  assert.deepEqual(inPage.args[0], "https://example.com/a.png");
+  assert.equal(env.calls.tabsCreate.length, 1);
+  assert.equal(env.calls.tabsCreate[0].url, SYNTHID_URL);
+  const reply = await getPending(env, env.createdTabs[0].id);
+  assert.equal(reply.found, true);
+  assert.equal(reply.name, "a.png");
+  assert.deepEqual(await bytesOf(reply.blob), Array.from(PNG));
+  assert.deepEqual(bannerCalls(env, 5), []);
+});
+
+test("access revoked and declined: an image in a same-origin top page but a cross-origin frame is fetched in the top frame", async () => {
+  const env = await loadBackground({ allSites: false, requestResult: false });
+  const tab = env.addTab(sourceTab());
+  env.scriptHandler = (d) =>
+    d.func
+      ? [{ result: { ok: true, blob: new Blob([PNG], { type: "image/png" }), type: "image/png", url: "https://example.com/a.png" } }]
+      : [{}];
+  env.click(
+    imageClick("https://example.com/a.png", { frameId: 7, frameUrl: "https://ads.example.net/frame" }),
+    tab,
+  );
+  await waitFor(() => env.createdTabs.length === 1, "synthid tab");
+  const inPage = env.calls.executeScript.find((d) => d.func);
+  assert.deepEqual(inPage.target, { tabId: 5, frameIds: [0] });
+});
+
+test("access revoked and declined: picking cross-origin media gets the access notice and requests nothing", async () => {
+  const env = await loadBackground({ allSites: false, requestResult: false });
+  const tab = env.addTab(sourceTab());
+  const media = { kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false };
+  await env.send({ type: "synthid:picked", media }, { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 });
+  await waitFor(() => bannerCalls(env, 5).length === 1, "access notice");
+  assert.match(bannerCalls(env, 5)[0].args[0].message, /needs access to websites to download this file/);
+  assert.equal(env.calls.permissionsRequest.length, 0, "not a user-action handler");
+  assert.equal(env.calls.tabsCreate.length, 0);
+  assert.equal(env.calls.fetch.length, 0);
+});
+
+test("access granted via the browser mid-session: picked media is fetched, found through contains() even if the cache missed it", async () => {
+  const env = await loadBackground({ allSites: false });
+  env.fetchHandler = async () => pngResponse();
+  const tab = env.addTab(sourceTab());
+  // Granted without the extension seeing the event (e.g. the event page was asleep).
+  env.granted.add(ALL_URLS);
+  const media = { kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false };
+  await env.send({ type: "synthid:picked", media }, { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 });
+  await waitFor(() => env.synthidTabs().length === 1, "synthid tab");
+  assert.equal(env.calls.permissionsRequest.length, 0);
+  assert.equal(env.calls.fetch.length, 1);
+});
+
+test("permissions.onRemoved for <all_urls> updates the cache: the next click requests access", async () => {
+  const env = await loadBackground();
+  env.fetchHandler = async () => pngResponse();
+  const tab = env.addTab(sourceTab());
+  await env.revoke(ALL_URLS);
+  env.click(imageClick(CDN_PNG), tab);
+  assert.equal(env.calls.permissionsRequest.length, 1);
+  assert.equal(env.calls.permissionsRequest[0].synchronous, true);
+  assert.deepEqual(env.calls.permissionsRequest[0].perms, ALL_SITES_REQUEST);
+  await waitFor(() => env.createdTabs.length === 1, "synthid tab");
+});
+
+test("permissions.onAdded for <all_urls> updates the cache: a later click skips the request", async () => {
+  const env = await loadBackground({ allSites: false });
+  env.fetchHandler = async () => pngResponse();
+  const tab = env.addTab(sourceTab());
+  await env.grant(ALL_URLS);
   env.click(imageClick(CDN_PNG), tab);
   assert.equal(env.calls.permissionsRequest.length, 0);
   await waitFor(() => env.createdTabs.length === 1, "synthid tab");
 });
 
-test("permissions.onAdded refreshes the cache so a later click skips the request", async () => {
+test("removing an unrelated permission leaves the cache alone", async () => {
   const env = await loadBackground();
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
-  await env.grant(CDN_PATTERN);
-  await Promise.all(env.getAllPromises);
-  await tick();
+  env.granted.add("https://cdn.example.com/*");
+  await env.revoke("https://cdn.example.com/*");
   env.click(imageClick(CDN_PNG), tab);
   assert.equal(env.calls.permissionsRequest.length, 0);
   await waitFor(() => env.createdTabs.length === 1, "synthid tab");
@@ -547,7 +680,7 @@ test("a malformed data: URL shows a notice", async () => {
 // 5. Rejected files
 
 test("an unsupported response type opens no synthid tab and injects a notice into the source tab", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+  const env = await loadBackground();
   env.fetchHandler = async () =>
     new Response("<html>login</html>", { headers: { "content-type": "text/html; charset=utf-8" } });
   const tab = env.addTab(sourceTab());
@@ -566,7 +699,7 @@ test("an unsupported response type opens no synthid tab and injects a notice int
 });
 
 test("an octet-stream response with an image extension is accepted and re-typed from the extension", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+  const env = await loadBackground();
   env.fetchHandler = async () => pngResponse(PNG, "application/octet-stream");
   const tab = env.addTab(sourceTab());
   env.click(imageClick(CDN_PNG), tab);
@@ -584,7 +717,7 @@ test("HTTP errors, empty bodies and oversized files show notices", async () => {
     [() => pngResponse(PNG, "image/png", { "content-length": String(300 * 1024 * 1024) }), /larger than 200 MB/],
   ];
   for (const [make, expected] of cases) {
-    const env = await loadBackground({ granted: [CDN_PATTERN] });
+    const env = await loadBackground();
     env.fetchHandler = async () => make();
     const tab = env.addTab(sourceTab());
     env.click(imageClick(CDN_PNG), tab);
@@ -595,17 +728,21 @@ test("HTTP errors, empty bodies and oversized files show notices", async () => {
 });
 
 test("without synthid.com host access nothing is opened and the user is told", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN], synthidGranted: false });
-  env.fetchHandler = async () => pngResponse();
+  // Only reachable with access revoked: all-sites access includes synthid.com.
+  const env = await loadBackground({ allSites: false, synthidGranted: false, requestResult: false });
+  env.scriptHandler = (d) =>
+    d.func
+      ? [{ result: { ok: true, blob: new Blob([PNG], { type: "image/png" }), type: "image/png", url: "https://example.com/a.png" } }]
+      : [{}];
   const tab = env.addTab(sourceTab());
-  env.click(imageClick(CDN_PNG), tab);
+  env.click(imageClick("https://example.com/a.png"), tab);
   await waitFor(() => bannerCalls(env, 5).length === 1, "access notice");
   assert.match(bannerCalls(env, 5)[0].args[0].message, /needs access to synthid\.com/);
   assert.equal(env.calls.tabsCreate.length, 0);
 });
 
 test("if openerTabId is rejected, synthid.com is opened as a plain tab in the same window", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN], failOpenerTabId: true });
+  const env = await loadBackground({ failOpenerTabId: true });
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
   env.click(imageClick(CDN_PNG), tab);
@@ -731,7 +868,7 @@ test("expired records are not returned and are deleted", async () => {
 // 7. Private windows
 
 test("private window media never reaches IndexedDB but getPending still returns it", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+  const env = await loadBackground();
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab({ incognito: true }));
   env.click(imageClick(CDN_PNG), tab);
@@ -763,80 +900,10 @@ test("private window data: URL media also stays out of IndexedDB", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Grant flow
+// 8. find-media
 
-for (const variant of [
-  {
-    name: "find-media item",
-    info: { menuItemId: "find-media", pageUrl: PAGE_URL, frameId: 0, targetElementId: 42 },
-  },
-  {
-    name: "check-media without srcUrl",
-    info: { menuItemId: "check-media", pageUrl: PAGE_URL, frameId: 0, targetElementId: 42, mediaType: "image" },
-  },
-  {
-    name: "check-media with a blob: srcUrl",
-    info: { menuItemId: "check-media", srcUrl: "blob:https://example.com/xyz", pageUrl: PAGE_URL, frameId: 0, targetElementId: 42 },
-  },
-]) {
-  test(`grant flow via ${variant.name}: opens the grant page, then resumes on synthid:granted`, async () => {
-    const env = await loadBackground();
-    env.scriptHandler = findMediaScript({ kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false });
-    env.fetchHandler = async () => pngResponse();
-    const tab = env.addTab(sourceTab());
-
-    env.click(variant.info, tab);
-    await waitFor(() => env.calls.tabsCreate.length === 1, "grant page tab");
-
-    // The permission can't be requested outside the click: no request, no fetch.
-    assert.equal(env.calls.permissionsRequest.length, 0);
-    assert.equal(env.calls.fetch.length, 0);
-    const grantProps = env.calls.tabsCreate[0];
-    assert.ok(grantProps.url.startsWith(EXT_BASE + "src/grant/grant.html?"), grantProps.url);
-    const query = new URL(grantProps.url).searchParams;
-    assert.equal(query.get("origin"), CDN_PATTERN);
-    const requestId = query.get("id");
-    assert.match(requestId, /^[0-9a-f-]{36}$/);
-    assert.equal(grantProps.active, true);
-    assert.equal(grantProps.openerTabId, 5);
-    assert.equal(grantProps.windowId, 3);
-    assert.equal(grantProps.index, 3);
-    // The pending request is mirrored into storage.session.
-    assert.deepEqual(Object.keys(env.sessionStorage), ["grant:" + requestId]);
-
-    // The find-media script was run in the clicked frame with the target element id.
-    const finder = env.calls.executeScript.find((d) => d.func);
-    assert.deepEqual(finder.target, { tabId: 5, frameIds: [0] });
-    assert.deepEqual(finder.args, [42]);
-
-    // The user allows the origin on the grant page, which tells the background.
-    const grantSender = env.grantSender(`?origin=${encodeURIComponent(CDN_PATTERN)}&id=${requestId}`);
-    await env.grant(CDN_PATTERN);
-    const reply = await env.send({ type: "synthid:granted", requestId }, grantSender);
-    assert.deepEqual(reply, { ok: true });
-
-    await waitFor(() => env.synthidTabs().length === 1, "synthid.com tab after grant");
-    assert.equal(env.calls.fetch.length, 1);
-    assert.equal(env.calls.fetch[0].url, CDN_PNG);
-    const synth = env.calls.tabsCreate.find((p) => p.url === SYNTHID_URL);
-    assert.equal(synth.openerTabId, 5);
-    assert.equal(synth.windowId, 3);
-    assert.equal(synth.index, 3);
-    const pending = await getPending(env, env.synthidTabs()[0].id);
-    assert.equal(pending.found, true);
-    assert.equal(pending.sourceUrl, CDN_PNG);
-    assert.deepEqual(await bytesOf(pending.blob), Array.from(PNG));
-    // The request is single-use and cleaned from storage.session.
-    assert.deepEqual(env.sessionStorage, {});
-    assert.deepEqual(
-      await env.send({ type: "synthid:granted", requestId }, grantSender),
-      { ok: false },
-    );
-  });
-}
-
-test("find-media on a page whose media is same-origin fetches in the page, no grant page", async () => {
-  const env = await loadBackground();
+test("find-media on a page whose media is same-origin still works when the background fetch is unavailable", async () => {
+  const env = await loadBackground({ allSites: false, requestResult: false });
   const media = { kind: "image", url: "https://example.com/a.png", isBlob: false, isMediaSource: false };
   env.scriptHandler = (d) => {
     if (!d.func) return [{}];
@@ -847,7 +914,7 @@ test("find-media on a page whose media is same-origin fetches in the page, no gr
   env.click({ menuItemId: "find-media", pageUrl: PAGE_URL, frameId: 0, targetElementId: 42 }, tab);
   await waitFor(() => env.synthidTabs().length === 1, "synthid tab");
   assert.equal(env.calls.fetch.length, 0);
-  assert.ok(!env.calls.tabsCreate.some((p) => p.url.includes("grant.html")));
+  assert.ok(!env.calls.tabsCreate.some((p) => p.url !== SYNTHID_URL));
 });
 
 test("find-media that finds nothing shows the nothing-found notice", async () => {
@@ -862,66 +929,42 @@ test("find-media that finds nothing shows the nothing-found notice", async () =>
   assert.equal(env.calls.tabsCreate.length, 0);
 });
 
-test("synthid:granted is refused from non-grant senders and for unknown or ungranted requests", async () => {
-  const env = await loadBackground();
-  env.scriptHandler = findMediaScript({ kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false });
+test("synthid:granted messages are ignored: there is no grant page any more", async () => {
+  const env = await loadBackground({ allSites: false, requestResult: false });
   env.fetchHandler = async () => pngResponse();
-  const tab = env.addTab(sourceTab());
-  env.click({ menuItemId: "find-media", pageUrl: PAGE_URL, frameId: 0, targetElementId: 1 }, tab);
-  await waitFor(() => env.calls.tabsCreate.length === 1, "grant page");
-  const requestId = new URL(env.calls.tabsCreate[0].url).searchParams.get("id");
-  const grantSender = env.grantSender();
-
-  // A web page or the synthid.com page cannot trigger it.
-  assert.deepEqual(
-    await env.send({ type: "synthid:granted", requestId }, env.synthidSender(7)),
-    { ok: false },
-  );
-  assert.deepEqual(
-    await env.send({ type: "synthid:granted", requestId }, { id: EXT_ID, url: "https://evil.example/", tab: { id: 7 } }),
-    { ok: false },
-  );
-  // Unknown ids and non-string ids.
-  assert.deepEqual(await env.send({ type: "synthid:granted", requestId: "nope" }, grantSender), { ok: false });
-  assert.deepEqual(await env.send({ type: "synthid:granted", requestId: 5 }, grantSender), { ok: false });
-  // Permission not actually granted: refused.
-  assert.deepEqual(await env.send({ type: "synthid:granted", requestId }, grantSender), { ok: false });
+  const senders = [
+    { id: EXT_ID, url: EXT_BASE + "src/grant/grant.html", tab: { id: 999 } },
+    env.synthidSender(7),
+    { id: EXT_ID, url: "https://evil.example/", tab: { id: 7 } },
+    { id: EXT_ID, url: POPUP_URL },
+  ];
+  for (const sender of senders) {
+    assert.equal(await env.send({ type: "synthid:granted", requestId: "abc" }, sender), undefined);
+  }
+  assert.equal(env.events.onMessage.listeners.length, 1);
+  await tick();
   assert.equal(env.calls.fetch.length, 0);
-  assert.equal(env.synthidTabs().length, 0);
+  assert.equal(env.calls.tabsCreate.length, 0);
+  assert.equal(env.calls.executeScript.length, 0);
+  assert.equal(env.calls.permissionsRequest.length, 0);
 });
 
-test("synthid:granted after the source tab was closed reports failure", async () => {
+test("a cross-origin network failure shows one notice and does not loop or request anything", async () => {
   const env = await loadBackground();
-  env.scriptHandler = findMediaScript({ kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false });
+  // Background fetch fails at the network level (default handler throws).
   const tab = env.addTab(sourceTab());
-  env.click({ menuItemId: "find-media", pageUrl: PAGE_URL, frameId: 0, targetElementId: 1 }, tab);
-  await waitFor(() => env.calls.tabsCreate.length === 1, "grant page");
-  const requestId = new URL(env.calls.tabsCreate[0].url).searchParams.get("id");
-  await env.grant(CDN_PATTERN);
-  env.tabs.delete(5);
-  assert.deepEqual(await env.send({ type: "synthid:granted", requestId }, env.grantSender()), { ok: false });
-  assert.equal(env.synthidTabs().length, 0);
-});
-
-test("if the origin is still ungranted-after-grant and the fetch fails, no second grant page is opened", async () => {
-  const env = await loadBackground();
-  env.scriptHandler = findMediaScript({ kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false });
-  const tab = env.addTab(sourceTab());
-  env.click({ menuItemId: "find-media", pageUrl: PAGE_URL, frameId: 0, targetElementId: 1 }, tab);
-  await waitFor(() => env.calls.tabsCreate.length === 1, "grant page");
-  const requestId = new URL(env.calls.tabsCreate[0].url).searchParams.get("id");
-  await env.grant(CDN_PATTERN);
-  // fetchHandler throws a network error (default).
-  assert.deepEqual(await env.send({ type: "synthid:granted", requestId }, env.grantSender()), { ok: true });
+  env.click(imageClick(CDN_PNG), tab);
   await waitFor(() => bannerCalls(env, 5).length === 1, "network error notice");
   assert.match(bannerCalls(env, 5)[0].args[0].message, /Couldn't download the file \(network error\)/);
-  assert.equal(env.calls.tabsCreate.length, 1);
+  await tick();
+  assert.equal(env.calls.fetch.length, 1);
+  assert.equal(env.calls.permissionsRequest.length, 0);
+  assert.equal(env.calls.tabsCreate.length, 0);
+  assert.equal(bannerCalls(env, 5).length, 1);
 });
 
 // ---------------------------------------------------------------------------
 // Toolbar picker
-
-const POPUP_URL = EXT_BASE + "src/popup/popup.html";
 
 function assertPickerInjected(env, tabId) {
   assert.deepEqual(env.calls.executeScript[0].files, ["src/content/resolve.js", "src/content/picker.js"]);
@@ -931,7 +974,7 @@ function assertPickerInjected(env, tabId) {
 }
 
 test("popup's Pick media button starts the picker; synthid:picked then resumes the check", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+  const env = await loadBackground();
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
   const reply = await env.send({ type: "synthid:startPicker", tabId: tab.id }, { id: EXT_ID, url: POPUP_URL });
@@ -951,7 +994,7 @@ test("synthid:startPicker is refused unless it comes from the popup", async () =
   const tab = env.addTab(sourceTab());
   for (const sender of [
     { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 },
-    { id: EXT_ID, url: EXT_BASE + "src/grant/grant.html" },
+    { id: EXT_ID, url: EXT_BASE + "src/options/options.html" },
     { id: "other@ext", url: POPUP_URL },
   ]) {
     const reply = await env.send({ type: "synthid:startPicker", tabId: tab.id }, sender);
@@ -989,6 +1032,45 @@ test("the start-picker shortcut starts the picker in the given tab, or the activ
   assert.equal(env.calls.executeScript.length, 0);
 });
 
+test("start-picker shortcut with access revoked requests <all_urls> synchronously and still starts the picker", async () => {
+  const env = await loadBackground({ allSites: false, requestResult: false });
+  const tab = env.addTab(sourceTab());
+  env.inListener = true;
+  env.events.commandsOnCommand.fire("start-picker", tab);
+  const synchronousCalls = env.calls.permissionsRequest.length;
+  env.inListener = false;
+  assert.equal(synchronousCalls, 1, "permissions.request must be called before any await");
+  assert.equal(env.calls.permissionsRequest[0].synchronous, true);
+  assert.deepEqual(env.calls.permissionsRequest[0].perms, ALL_SITES_REQUEST);
+
+  // Declined, but pick mode is not blocked.
+  await waitFor(() => env.calls.executeScript.length === 2, "picker injection");
+  assertPickerInjected(env, 5);
+
+  // Also when the tab has to be looked up first (an await before injection).
+  env.calls.permissionsRequest.length = 0;
+  env.calls.executeScript.length = 0;
+  env.command("start-picker");
+  assert.equal(env.calls.permissionsRequest.length, 1);
+  assert.equal(env.calls.permissionsRequest[0].synchronous, true);
+  await waitFor(() => env.calls.executeScript.length === 2, "picker injection via active tab");
+});
+
+test("start-picker shortcut with access granted, and other commands, request nothing", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  env.command("start-picker", tab);
+  await waitFor(() => env.calls.executeScript.length === 2, "picker injection");
+  env.command("_execute_action", tab);
+  await tick();
+  assert.equal(env.calls.permissionsRequest.length, 0);
+
+  const revoked = await loadBackground({ allSites: false });
+  revoked.command("_execute_action", revoked.addTab(sourceTab()));
+  await tick();
+  assert.equal(revoked.calls.permissionsRequest.length, 0);
+});
+
 test("synthid:picked with nothing shows the nothing-found notice", async () => {
   const env = await loadBackground();
   const tab = env.addTab(sourceTab());
@@ -1001,7 +1083,7 @@ test("synthid:picked with nothing shows the nothing-found notice", async () => {
 // 9. Startup
 
 test("onStartup recreates the menus and clears every pending record, disk and private", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+  const env = await loadBackground();
   env.fetchHandler = async () => pngResponse();
   const normal = await seedPending(env, sourceTab({ id: 5 }));
   // A second, private record held in memory.
@@ -1087,7 +1169,7 @@ test("an unreadable blob: video and a MediaSource video both get the streaming n
 });
 
 test("a file that streams past the size cap without content-length is aborted", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+  const env = await loadBackground();
   env.fetchHandler = async (url, init) => ({
     ok: true,
     status: 200,
@@ -1108,8 +1190,8 @@ test("a file that streams past the size cap without content-length is aborted", 
   assert.equal(env.calls.fetch[0].init.signal.aborted, true);
 });
 
-test("when the background fetch fails on a granted origin, the same-origin page fetch is the fallback", async () => {
-  const env = await loadBackground({ granted: ["https://example.com/*"] });
+test("when the background fetch fails, the same-origin page fetch is the fallback", async () => {
+  const env = await loadBackground();
   env.fetchHandler = async () => {
     throw new TypeError("NetworkError");
   };
@@ -1124,8 +1206,8 @@ test("when the background fetch fails on a granted origin, the same-origin page 
   assert.equal((await getPending(env, env.synthidTabs()[0].id)).found, true);
 });
 
-test("a granted cross-origin image whose fetch fails shows an error instead of opening the grant page", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+test("a cross-origin image whose background fetch fails shows an error and opens nothing", async () => {
+  const env = await loadBackground();
   const tab = env.addTab(sourceTab());
   env.click(imageClick(CDN_PNG), tab);
   await waitFor(() => bannerCalls(env, 5).length === 1, "error notice");
@@ -1150,7 +1232,7 @@ test("find-media on a restricted page (executeScript throws) says nothing was fo
 });
 
 test("a slow download shows the working notice, then hides it once synthid.com is opened", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+  const env = await loadBackground();
   env.fetchHandler = () => new Promise((resolve) => setTimeout(() => resolve(pngResponse()), 1000));
   const tab = env.addTab(sourceTab());
   env.click(imageClick(CDN_PNG), tab);
@@ -1166,7 +1248,7 @@ test("a slow download shows the working notice, then hides it once synthid.com i
 });
 
 test("a fast download never shows the working notice", async () => {
-  const env = await loadBackground({ granted: [CDN_PATTERN] });
+  const env = await loadBackground();
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
   env.click(imageClick(CDN_PNG), tab);
