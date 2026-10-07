@@ -6,6 +6,8 @@ It never calls synthid.com's backend directly, never auto-accepts the site's Ter
 
 No build step. Plain scripts, using the `browser.*` promise API.
 
+Scripts are injected on demand, with one exception: while the `dropZone` setting is on, `resolve.js` and `dropzone.js` are registered as content scripts for all pages and frames (see Drop zone).
+
 ## Files
 
 | File | Runs in | Responsibility |
@@ -13,7 +15,8 @@ No build step. Plain scripts, using the `browser.*` promise API.
 | `src/lib/media.js` | background (classic script) and Node tests | Pure helpers: accepted types, MIME and extension checks, file names, `data:` URL → Blob. |
 | `src/lib/pending.js` | background | IndexedDB store of pending checks, keyed by the synthid.com tab id. |
 | `src/background.js` | background event page | Menus, toolbar/picker, permissions, getting the file, opening synthid.com, messaging. |
-| `src/content/resolve.js` | injected into the source page on demand | Finds the media element for a right-click target or a point; reads `blob:` URLs. |
+| `src/content/resolve.js` | injected into the source page on demand; also registered with `dropzone.js` while the drop zone is on | Finds the media element for a right-click target or a point; reads `blob:` URLs. |
+| `src/content/dropzone.js` | registered content script, all pages and frames (except synthid.com) while the `dropZone` setting is on | Drop zone: shows a drop target while an image is dragged; dropping on it starts a check. |
 | `src/content/picker.js` | injected on demand | Pick mode: hover to highlight media, click to choose, Esc to cancel. |
 | `src/content/banner.js` | synthid.com content script; also injected into source pages for notices | Shadow-DOM banner UI. |
 | `src/content/synthid.js` | synthid.com content script | Attaches the pending file to the site's file input (paste fallback); handles the Terms and sign-in dialogs. |
@@ -73,6 +76,9 @@ Defines `globalThis.SynthIDPicker`.
 - `SynthIDPicker.start()`. Shows a highlight outline over the media under the cursor, using `SynthIDResolve.fromPoint`, plus a small hint pill: "Click media to check with SynthID · Esc to cancel". On click (capture phase, with `preventDefault` and `stopPropagation`), it resolves and sends `{type: "synthid:picked", media}` with `browser.runtime.sendMessage`, or `{type: "synthid:picked", media: null}` if nothing was found. Then it stops. Esc stops it without sending.
 - It is idempotent: if it's already running, `start()` is a no-op.
 
+### `src/content/dropzone.js`
+Defines `globalThis.SynthIDDropZone = { hide }`. Idempotent: it does nothing if `hide` already exists as a function. It only adds listeners; see Drop zone below.
+
 ## Messages (`browser.runtime.sendMessage`; the background reads `sender.tab.id`)
 
 | From → to | Message | Reply |
@@ -81,6 +87,7 @@ Defines `globalThis.SynthIDPicker`.
 | synthid.js → bg | `{type:"synthid:attached", signInRequired:boolean}` | `{ok:true}`. The bg sets `attachedAt` and `signInSeen\|=signInRequired`, and sets `autoAttach = signInRequired` (re-attach automatically only after a sign-in redirect). |
 | synthid.js → bg | `{type:"synthid:clear"}` | `{ok:true}` (removes the record) |
 | picker.js → bg | `{type:"synthid:picked", media}` | none |
+| dropzone.js → bg | `{type:"synthid:dropped", media}` | none. Handled like `synthid:picked`, with `sender.frameId` as the source frame. |
 | popup → bg | `{type:"synthid:startPicker", tabId}` | `{ok:boolean}`. Accepted only from the popup page; `ok:false` when the page blocks injection. |
 
 Firefox runtime messaging uses structured clone, so `Blob` crosses the boundary intact.
@@ -133,6 +140,15 @@ Declared with `run_at: document_start`, so the file transfer from the background
 6. **Copy image:** `navigator.clipboard.write([new ClipboardItem({"image/png": …})])` inside the click handler. Images only.
 7. On dismiss, send `synthid:clear`.
 
+### Drop zone
+- **Registration.** `syncDropZone()` in the background registers the content script `drop-zone` with `scripting.registerContentScripts` (`resolve.js` + `dropzone.js`, `<all_urls>`, excluding `https://synthid.com/*`, `allFrames`, `document_start`) while `settings.dropZone` is not `false` (default `true`, in `storage.sync`). It unregisters it when the setting is off. It runs at startup, on `storage.onChanged` for `dropZone`, and on `runtime.onInstalled` (which also refreshes the definition with `updateContentScripts`). Calls are chained so overlapping runs can't register the id twice. The setting only affects pages opened or reloaded afterwards.
+- **Drag detection.** Listeners are on `window`, capture phase, added at `document_start`, and ignore `!isTrusted` events. On `dragstart`, the target is checked: an `img`, `picture` or SVG `image` goes through `SynthIDResolve.fromElement`. For anything else (for example an image inside a link, which drags as the link), the zone counts only when `dataTransfer.types` has `application/x-moz-nativeimage`, and the media comes from `SynthIDResolve.fromPoint`. Only `kind: "image"` with a URL counts. Text and plain links don't show the zone.
+- **Showing.** After the check, `setTimeout(0)` waits for the page's own `dragstart` handlers; if `e.defaultPrevented`, the drag was cancelled, no `dragend` would follow, and the zone is not shown. Frames smaller than 240x160 get no zone.
+- **Why in the source frame.** Firefox doesn't let a cross-origin frame drop into its parent, so a zone in the top frame couldn't receive a drag that started in an iframe. The zone is shown in the frame where the drag started: the top frame for ordinary pages.
+- **The zone.** A `<synthid-check-dropzone>` host with a closed shadow root and `data-synthid-picker`, so `resolve.js` never takes it for page media. It is fixed at the bottom-right, half transparent with a dashed border, and uses the popover top layer (`popover="manual"`, `showPopover()`) to stay above page dialogs. `dragenter`/`dragover` on it call `preventDefault` and `stopImmediatePropagation` and set `dropEffect` within what the source's `effectAllowed` permits.
+- **Drop.** A drop on the zone is stopped, the zone is hidden, and `{type:"synthid:dropped", media}` is sent. The background runs `acquire` with `sender.tab` and `sender.frameId`, like `synthid:picked`. A drop anywhere else just hides the zone. Nothing is read or sent before the drop.
+- **Hiding.** On `dragend`, `drop`, `pagehide`, and when a new `dragstart` begins. `dragend` goes to the drag source, so a page that removes the source from the document mid-drag hides it from us. As a fallback, a trusted `mousemove` with `buttons === 0` while the zone is shown hides it, since no mouse events reach the page during a drag.
+
 ## Hardening added after review
 
 - **Dismiss and Terms.** `synthid.js` stops the flow as soon as the banner is dismissed. It never attaches while the "Agree and continue" dialog is visible: it watches for the dialog while waiting for the file input, and on a first visit (no Terms acceptance stored by the site) it requires a short period with no dialog before attaching. A Retry or "Attach again" click goes through the same checks.
@@ -143,3 +159,4 @@ Declared with `run_at: document_start`, so the file transfer from the background
 - **Downloads.** The size cap is enforced while streaming the download. After a network error , there is one fallback to an in-page fetch for the page's own origin, then a notice.
 - **Permissions.** The options page doesn't list `https://synthid.com/*` as removable. If that access has been revoked anyway, the background shows a notice instead of opening a tab where nothing can be attached.
 - **Re-injection guards.** They check for function types (`typeof X?.fn === "function"`), so named page elements (window named properties) can't spoof them.
+- **Drop zone.** It ignores synthetic events, so a page can't show the zone or trigger a drop. Its listeners run in the capture phase on `window` from `document_start`, ahead of the page's, so a page can't swallow drops meant for the zone. The script sends nothing until a trusted drop lands on the zone, and the guard against double injection checks `typeof SynthIDDropZone?.hide === "function"`.

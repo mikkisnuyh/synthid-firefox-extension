@@ -6,6 +6,7 @@ Right-click an image, video, or audio element to check it for a SynthID watermar
 
 - **Context menu:** Right-click an image, video, or audio element and select "Check with SynthID". If the site covers the media with an overlay, use "Find media under the cursor and check with SynthID" from the page or frame context menu.
 - **Toolbar menu:** Click the extension icon to open its menu, then choose **Pick media on this page**. Media is highlighted as you move the cursor; click the one you want to check, or press Esc to cancel. The menu also links to synthid.com and the settings.
+- **Drag and drop:** Drag an image on a page. A box "Drop here to check with SynthID" appears in the bottom-right corner. Drop the image on it to start the check. The box goes away when the drag ends. You can turn this off with "Show a drop zone when you drag an image" in the settings; the change applies to pages you open or reload afterwards.
 - **Keyboard shortcut:** Press Alt+Shift+S to start pick mode directly, without the menu. You can change it, or add a shortcut that opens the menu, in about:addons → Manage Extension Shortcuts.
 
 ## What it can and can't detect
@@ -17,6 +18,7 @@ SynthID is Google DeepMind's invisible watermark. Google's AI products embed it,
 - Absence of a detected watermark does not mean the media was created by a human.
 - Text is not supported. synthid.com only checks images, audio and video. There is no public SynthID text detector.
 - If synthid.com reports an error while checking (for example after many checks in a short time), the extension shows "Unexpected error" with a **Try again** button.
+- Drag and drop only works for images the page lets you drag. Sites that disable image dragging or cover images with overlays won't show the drop zone (use pick mode or "Find media under the cursor"). Video and audio are usually not draggable. Files dragged from the desktop or another window aren't supported. The box isn't shown in frames smaller than 240x160, and when you drag out of an embedded frame it appears inside that frame.
 - Streaming videos (e.g., YouTube) cannot be captured. Download and upload the file directly on synthid.com.
 
 ## Website access
@@ -39,7 +41,8 @@ Firefox asks for access to all websites when you install the extension, and that
 | `storage` | To store extension settings in Firefox Sync storage |
 | `clipboardWrite` | To copy images to the clipboard as a fallback |
 | Access to all websites (`host_permissions: <all_urls>`) | Granted once when you install. Needed to download the original file from whichever site hosts it (often a different site than the page, such as an image CDN). Files are only downloaded when you start a check. |
-| Content script on synthid.com only | To attach the file to synthid.com's own upload form and show status (it never signs in or accepts terms for you) |
+| Content script on synthid.com | To attach the file to synthid.com's own upload form and show status (it never signs in or accepts terms for you) |
+| Content script on all sites (only while "Show a drop zone when you drag an image" is on) | To show the drop zone while you drag an image. It only listens for drag events; it reads nothing and sends nothing until you drop an image on the zone. It uses the existing `scripting` and website access permissions, so there is no extra prompt. |
 
 **Data collection:** This extension declares `websiteContent` in its manifest. When you initiate a check, the file you choose is downloaded from the site hosting it and sent to synthid.com (Google's service). No other data is collected or sent.
 
