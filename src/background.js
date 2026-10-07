@@ -58,7 +58,7 @@ const SYNTHID_URL = "https://synthid.com/";
 const POPUP_PAGE = "src/popup/popup.html";
 const ALL_SITES = "<all_urls>";
 const WORKING_NOTICE_DELAY_MS = 800;
-const DEFAULT_SETTINGS = { openInForeground: true };
+const DEFAULT_SETTINGS = { openInForeground: true, dropZone: true };
 
 const TEXT = {
   title: "SynthID Check",
@@ -270,6 +270,8 @@ function createMenus() {
 
 browser.runtime.onInstalled.addListener(() => {
   createMenus();
+  // An update may change the script list; refresh the registered definition.
+  syncDropZone(true);
 });
 browser.runtime.onStartup.addListener(() => {
   createMenus();
@@ -369,6 +371,46 @@ browser.commands.onCommand.addListener(async (name, tab) => {
     tabId = active?.id;
   }
   startPicker(tabId);
+});
+
+// ---------------------------------------------------------------------------
+// Drop zone: a content script on every page and frame shows a drop target while an
+// image is dragged (src/content/dropzone.js). Registered only while the setting is on.
+
+const DROP_ZONE_SCRIPT = {
+  id: "drop-zone",
+  matches: [ALL_SITES],
+  // synthid.com has its own upload drop target.
+  excludeMatches: [SYNTHID_ORIGIN_PATTERN],
+  js: ["src/content/resolve.js", "src/content/dropzone.js"],
+  allFrames: true,
+  runAt: "document_start",
+};
+
+// Runs one at a time so overlapping calls can't register the id twice.
+let dropZoneSync = Promise.resolve();
+
+function syncDropZone(refresh = false) {
+  dropZoneSync = dropZoneSync
+    .then(async () => {
+      const settings = await getSettings();
+      const ids = [DROP_ZONE_SCRIPT.id];
+      const registered = (await browser.scripting.getRegisteredContentScripts({ ids })).length > 0;
+      if (settings.dropZone === false) {
+        if (registered) await browser.scripting.unregisterContentScripts({ ids });
+      } else if (!registered) {
+        await browser.scripting.registerContentScripts([DROP_ZONE_SCRIPT]);
+      } else if (refresh) {
+        await browser.scripting.updateContentScripts([DROP_ZONE_SCRIPT]);
+      }
+    })
+    .catch((e) => console.warn("SynthID Check: updating the drop zone failed", e));
+  return dropZoneSync;
+}
+
+syncDropZone();
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === "sync" && changes && "dropZone" in changes) syncDropZone();
 });
 
 // ---------------------------------------------------------------------------
@@ -703,6 +745,17 @@ browser.runtime.onMessage.addListener((msg, sender) => {
         };
         if (msg.media && msg.media.url) acquire(msg.media, ctx);
         else notify(sender.tab.id, { state: "info", message: TEXT.nothingFound });
+      }
+      return undefined;
+
+    case "synthid:dropped":
+      if (sender.tab && msg.media && typeof msg.media.url === "string" && msg.media.url) {
+        acquire(msg.media, {
+          tab: sender.tab,
+          frameId: sender.frameId ?? 0,
+          frameUrl: sender.url || sender.tab.url,
+          pageUrl: sender.tab.url,
+        });
       }
       return undefined;
 

@@ -2,9 +2,10 @@
 
 (function () {
   const ALL = { origins: ["<all_urls>"] };
-  const DEFAULTS = { openInForeground: true };
+  const DEFAULTS = { openInForeground: true, dropZone: true };
 
   const foreground = document.getElementById("openInForeground");
+  const dropZone = document.getElementById("dropZone");
   const accessStatus = document.getElementById("access-status");
   const restoreBlock = document.getElementById("restore-block");
   const restore = document.getElementById("restore");
@@ -18,10 +19,15 @@
   async function loadSettings() {
     const s = await browser.storage.sync.get(DEFAULTS);
     foreground.checked = s.openInForeground !== false;
+    dropZone.checked = s.dropZone !== false;
   }
 
   foreground.addEventListener("change", () => {
     browser.storage.sync.set({ openInForeground: foreground.checked }).catch(showError);
+  });
+
+  dropZone.addEventListener("change", () => {
+    browser.storage.sync.set({ dropZone: dropZone.checked }).catch(showError);
   });
 
   // Granted at install. Firefox lets users revoke it, so offer a way back.
