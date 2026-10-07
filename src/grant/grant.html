@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SynthID Check: allow access</title>
+  <link rel="stylesheet" href="../options/options.css">
+</head>
+<body class="page-grant">
+  <main class="card">
+    <h1 id="question">Allow SynthID Check to download media?</h1>
+    <p class="muted">
+      SynthID Check downloads the original file from the site that hosts it, then attaches it to
+      synthid.com's upload form. Nothing is sent anywhere else.
+    </p>
+    <div class="buttons">
+      <button type="button" id="allow" class="primary">Allow</button>
+      <button type="button" id="allow-all">Allow for all sites</button>
+      <button type="button" id="cancel" class="link">Cancel</button>
+    </div>
+    <p id="status" class="status" role="status" hidden></p>
+  </main>
+  <script src="grant.js"></script>
+</body>
+</html>

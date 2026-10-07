@@ -77,7 +77,7 @@ Defines `globalThis.SynthIDPicker`.
 
 | From → to | Message | Reply |
 |---|---|---|
-| synthid.js → bg | `{type:"synthid:getPending"}` | `{found:false}` or `{found:true, blob, name, type, autoAttach, signInSeen}` |
+| synthid.js → bg | `{type:"synthid:getPending"}` | `{found:false}` or `{found:true, blob, name, type, sourceUrl, autoAttach, signInSeen}` |
 | synthid.js → bg | `{type:"synthid:attached", signInRequired:boolean}` | `{ok:true}`. The bg sets `attachedAt` and `signInSeen\|=signInRequired`, and sets `autoAttach = signInRequired` (re-attach automatically only after a sign-in redirect). |
 | synthid.js → bg | `{type:"synthid:clear"}` | `{ok:true}` (removes the record) |
 | picker.js → bg | `{type:"synthid:picked", media}` | none |

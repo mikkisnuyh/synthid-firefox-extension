@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SynthID Check settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body class="page-options">
+  <main>
+    <section>
+      <h2>General</h2>
+      <label class="check">
+        <input type="checkbox" id="openInForeground">
+        <span>Switch to the synthid.com tab when a check starts</span>
+      </label>
+    </section>
+
+    <section>
+      <h2>Site access</h2>
+      <p class="muted">
+        To check a file, SynthID Check downloads the original from the site that hosts it, which is
+        often a different site than the page you're on (for example an image CDN). Firefox asks
+        once per site. You can allow all sites here instead, so you're never asked again.
+        Files are only downloaded when you choose to check them.
+      </p>
+      <p id="all-status" class="status-line"></p>
+      <div class="buttons">
+        <button type="button" id="toggle-all" class="primary"></button>
+      </div>
+
+      <div id="sites-block" hidden>
+        <h3>Sites you've allowed</h3>
+        <ul id="sites" class="sites"></ul>
+      </div>
+      <p id="error" class="status" role="status" hidden></p>
+    </section>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>
