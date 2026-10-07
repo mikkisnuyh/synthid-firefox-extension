@@ -3,7 +3,56 @@
 /* global SynthIDMedia, SynthIDPending */
 
 const Media = SynthIDMedia;
-const Pending = SynthIDPending;
+const DiskPending = SynthIDPending;
+
+// Pending records. Media from private windows must never reach on-disk
+// IndexedDB, so those live in memory (lost if the event page unloads).
+const memoryPending = new Map();
+
+const Pending = {
+  put(record, incognito) {
+    if (!incognito) return DiskPending.put(record);
+    memoryPending.set(record.tabId, {
+      createdAt: Date.now(),
+      autoAttach: true,
+      attachedAt: null,
+      signInSeen: false,
+      ...record,
+    });
+    return Promise.resolve();
+  },
+  async get(tabId) {
+    const rec = memoryPending.get(tabId);
+    if (rec) {
+      if (Date.now() - rec.createdAt <= DiskPending.TTL_MS) return rec;
+      memoryPending.delete(tabId);
+      return null;
+    }
+    return DiskPending.get(tabId);
+  },
+  async update(tabId, patch) {
+    const rec = memoryPending.get(tabId);
+    if (!rec) return DiskPending.update(tabId, patch);
+    const updated = { ...rec, ...patch, tabId };
+    memoryPending.set(tabId, updated);
+    return updated;
+  },
+  async remove(tabId) {
+    if (memoryPending.delete(tabId)) return undefined;
+    return DiskPending.remove(tabId);
+  },
+  clear() {
+    memoryPending.clear();
+    return DiskPending.clear();
+  },
+  purgeExpired() {
+    const now = Date.now();
+    for (const [id, rec] of memoryPending) {
+      if (now - rec.createdAt > DiskPending.TTL_MS) memoryPending.delete(id);
+    }
+    return DiskPending.purgeExpired();
+  },
+};
 
 const SYNTHID_URL = "https://synthid.com/";
 const GRANT_PAGE = "src/grant/grant.html";
@@ -29,7 +78,11 @@ const TEXT = {
   badDataUrl: "Couldn't read this embedded file. Try saving it and uploading it on synthid.com.",
   blobFailed: "Couldn't read this file from the page. Try saving it and uploading it on synthid.com.",
   working: "Getting the file…",
+  synthidAccess:
+    "SynthID Check needs access to synthid.com to attach the file. " +
+    "Re-enable it in the extension's settings (about:addons → SynthID Check → Permissions).",
 };
+const SYNTHID_ORIGIN_PATTERN = "https://synthid.com/*";
 
 class Notice extends Error {
   constructor(message, state = "error") {
@@ -37,6 +90,9 @@ class Notice extends Error {
     this.state = state;
   }
 }
+
+// The background fetch failed at the network level (not an HTTP status).
+class NetworkError extends Error {}
 
 // ---------------------------------------------------------------------------
 // Permission cache: menus.onClicked must call permissions.request() before any
@@ -113,25 +169,39 @@ async function getSettings() {
   }
 }
 
-// Notices run one at a time so a late "working" notice can't cover an error.
-let noticeQueue = Promise.resolve();
+// Notices run one at a time per tab so a late "working" notice can't cover an
+// error, and one stalled tab can't delay notices in other tabs.
+const noticeQueues = new Map();
+
+function enqueueNotice(tabId, task) {
+  const next = (noticeQueues.get(tabId) || Promise.resolve()).then(task);
+  const tail = next.catch(() => {});
+  noticeQueues.set(tabId, tail);
+  tail.then(() => {
+    if (noticeQueues.get(tabId) === tail) noticeQueues.delete(tabId);
+  });
+  return next;
+}
 
 function notify(tabId, notice) {
-  noticeQueue = noticeQueue.then(() => showNotice(tabId, notice));
-  return noticeQueue;
+  return enqueueNotice(tabId, () => showNotice(tabId, notice));
 }
 
 function hideNotice(tabId) {
-  noticeQueue = noticeQueue.then(() => hideBanner(tabId));
-  return noticeQueue;
+  return enqueueNotice(tabId, () => hideBanner(tabId));
 }
 
 async function showNotice(tabId, notice) {
   if (tabId == null || tabId < 0) return;
   try {
-    await browser.scripting.executeScript({ target: { tabId }, files: ["src/content/banner.js"] });
     await browser.scripting.executeScript({
       target: { tabId },
+      files: ["src/content/banner.js"],
+      injectImmediately: true,
+    });
+    await browser.scripting.executeScript({
+      target: { tabId },
+      injectImmediately: true,
       func: (n) => {
         SynthIDBanner.show(n);
       },
@@ -146,8 +216,9 @@ async function hideBanner(tabId) {
   try {
     await browser.scripting.executeScript({
       target: { tabId },
+      injectImmediately: true,
       func: () => {
-        if (globalThis.SynthIDBanner) SynthIDBanner.hide();
+        if (typeof globalThis.SynthIDBanner?.hide === "function") SynthIDBanner.hide();
       },
     });
   } catch {
@@ -159,6 +230,7 @@ async function injectResolve(tabId, frameId) {
   await browser.scripting.executeScript({
     target: { tabId, frameIds: [frameId] },
     files: ["src/content/resolve.js"],
+    injectImmediately: true,
   });
 }
 
@@ -192,6 +264,8 @@ browser.runtime.onInstalled.addListener(() => {
 });
 browser.runtime.onStartup.addListener(() => {
   createMenus();
+  // Tab ids restart each session; a stale file must not attach to an unrelated tab.
+  Pending.clear().catch((e) => console.warn("SynthID Check: clearing pending files failed", e));
 });
 
 browser.menus.onClicked.addListener((info, tab) => {
@@ -203,7 +277,8 @@ browser.menus.onClicked.addListener((info, tab) => {
 function onCheckMedia(info, tab) {
   const url = info.srcUrl;
   const frameId = info.frameId ?? 0;
-  const ctx = { tab, frameId, frameUrl: info.frameUrl || info.pageUrl || tab.url };
+  const pageUrl = info.pageUrl || tab.url;
+  const ctx = { tab, frameId, frameUrl: info.frameUrl || pageUrl, pageUrl };
 
   // No usable URL (or a blob: URL): let resolve.js inspect the element instead.
   if (!url || /^blob:/i.test(url)) {
@@ -213,7 +288,8 @@ function onCheckMedia(info, tab) {
 
   const media = { kind: info.mediaType || "image", url, isBlob: false, isMediaSource: false };
 
-  if (isHttp(url) && !isKnownGranted(url) && !sameOrigin(url, ctx.frameUrl)) {
+  // activeTab covers the top-level tab's origin only, not a cross-origin frame's.
+  if (isHttp(url) && !isKnownGranted(url) && !sameOrigin(url, pageUrl)) {
     const pattern = Media.originPattern(url);
     // Must run synchronously inside the click handler. If the origin is
     // already granted (cache not loaded yet), this resolves true at once.
@@ -235,12 +311,14 @@ function onCheckMedia(info, tab) {
 
 async function onFindMedia(info, tab) {
   const frameId = info.frameId ?? 0;
-  const ctx = { tab, frameId, frameUrl: info.frameUrl || info.pageUrl || tab.url };
+  const pageUrl = info.pageUrl || tab.url;
+  const ctx = { tab, frameId, frameUrl: info.frameUrl || pageUrl, pageUrl };
   let media = null;
   try {
     await injectResolve(tab.id, frameId);
     const [res] = await browser.scripting.executeScript({
       target: { tabId: tab.id, frameIds: [frameId] },
+      injectImmediately: true,
       func: (targetId) => {
         const el = targetId != null ? browser.menus.getTargetElement(targetId) : null;
         const m = el ? SynthIDResolve.fromElement(el) : null;
@@ -267,9 +345,11 @@ browser.action.onClicked.addListener(async (tab) => {
     await browser.scripting.executeScript({
       target: { tabId: tab.id, frameIds: [0] },
       files: ["src/content/resolve.js", "src/content/picker.js"],
+      injectImmediately: true,
     });
     await browser.scripting.executeScript({
       target: { tabId: tab.id, frameIds: [0] },
+      injectImmediately: true,
       func: () => {
         SynthIDPicker.start();
       },
@@ -343,39 +423,85 @@ async function getFile(media, ctx) {
       granted = false;
     }
   }
-  if (granted) return fetchInBackground(url);
+  if (granted) {
+    try {
+      return await fetchInBackground(url);
+    } catch (e) {
+      // E.g. a redirect to a host we have no permission for. Fall back once;
+      // after the grant page there is no second fallback.
+      if (!(e instanceof NetworkError)) throw e;
+      if (ctx.fromGrant) throw new Notice(TEXT.fetchFailed("network error"));
+      console.warn("SynthID Check: background fetch failed, trying the fallback", e);
+    }
+  }
 
   // activeTab covers the page's own origin, so fetch from inside the page.
-  if (sameOrigin(url, ctx.frameUrl)) {
-    const result = await fetchInFrame(url, ctx).catch((e) => {
+  // The media may belong to the top-level page while the click was in a cross-origin frame.
+  const fetchFrameId = sameOrigin(url, ctx.frameUrl)
+    ? ctx.frameId
+    : ctx.pageUrl && sameOrigin(url, ctx.pageUrl)
+      ? 0
+      : null;
+  if (fetchFrameId !== null) {
+    const result = await fetchInFrame(url, ctx, fetchFrameId).catch((e) => {
       console.warn("SynthID Check: in-page fetch unavailable", e);
       return null;
     });
     if (result) return result;
   }
 
+  if (ctx.fromGrant) throw new Notice(TEXT.fetchFailed("network error"));
   await openGrantPage(media, ctx, pattern);
   return null;
 }
 
 async function fetchInBackground(url) {
+  const tooLarge = () => new Notice(TEXT.tooLarge(Media.MAX_BYTES / 1048576));
+  const controller = new AbortController();
   let res;
   try {
-    res = await fetch(url, { credentials: "include", cache: "force-cache" });
+    res = await fetch(url, { credentials: "include", cache: "force-cache", signal: controller.signal });
   } catch {
-    throw new Notice(TEXT.fetchFailed("network error"));
+    throw new NetworkError("fetch failed");
   }
   if (!res.ok) throw new Notice(TEXT.fetchFailed(res.status));
-  const length = Number(res.headers.get("content-length"));
-  if (length > Media.MAX_BYTES) throw new Notice(TEXT.tooLarge(Media.MAX_BYTES / 1048576));
-  const blob = await res.blob();
-  return { blob, type: blob.type || res.headers.get("content-type") || "", url: res.url || url };
+  if (Number(res.headers.get("content-length")) > Media.MAX_BYTES) {
+    controller.abort();
+    throw tooLarge();
+  }
+  const type = res.headers.get("content-type") || "";
+  if (!res.body) {
+    const blob = await res.blob();
+    return { blob, type: blob.type || type, url: res.url || url };
+  }
+  // No (or wrong) content-length: count bytes and stop early past the cap.
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > Media.MAX_BYTES) {
+        controller.abort();
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+  } catch (e) {
+    if (e instanceof Notice) throw e;
+    throw new NetworkError("body read failed");
+  }
+  const blob = new Blob(chunks, { type });
+  return { blob, type: blob.type || type, url: res.url || url };
 }
 
 // Returns null when the script can't run in the frame (caller falls back).
-async function fetchInFrame(url, ctx) {
+async function fetchInFrame(url, ctx, frameId = ctx.frameId) {
   const [res] = await browser.scripting.executeScript({
-    target: { tabId: ctx.tab.id, frameIds: [ctx.frameId] },
+    target: { tabId: ctx.tab.id, frameIds: [frameId] },
+    injectImmediately: true,
     func: async (u, max) => {
       try {
         const r = await fetch(u, { credentials: "include", cache: "force-cache" });
@@ -405,6 +531,7 @@ async function readBlobInFrame(media, ctx) {
     await injectResolve(ctx.tab.id, ctx.frameId);
     const [res] = await browser.scripting.executeScript({
       target: { tabId: ctx.tab.id, frameIds: [ctx.frameId] },
+      injectImmediately: true,
       func: (u) => SynthIDResolve.readBlobUrl(u),
       args: [media.url],
     });
@@ -412,6 +539,7 @@ async function readBlobInFrame(media, ctx) {
   } catch (e) {
     console.warn("SynthID Check: readBlobUrl failed", e);
   }
+  if (out && !out.ok && out.error === "too large") throw new Notice(TEXT.tooLarge(Media.MAX_BYTES / 1048576));
   const blob = out && out.ok ? toBlob(out.blob, out.type) : null;
   if (!blob) throw new Notice(isAV ? TEXT.streaming : TEXT.blobFailed, isAV ? "warn" : "error");
   return { blob, type: out.type || blob.type, url: media.url };
@@ -445,26 +573,52 @@ function validate(file, mediaUrl) {
 // getPending waits for this so a fast-loading tab can't read before put().
 let openInFlight = Promise.resolve();
 
-function openSynthId(file, sourceUrl, sourceTab) {
-  const run = (async () => {
-    const settings = await getSettings();
-    const newTab = await browser.tabs.create({
-      url: SYNTHID_URL,
+// Opens a tab next to the source tab. openerTabId can throw when the source
+// tab is in another window, so fall back to a plain tab in the same window.
+async function createTabNear(sourceTab, props) {
+  try {
+    return await browser.tabs.create({
+      ...props,
+      windowId: sourceTab.windowId,
       index: sourceTab.index + 1,
       openerTabId: sourceTab.id,
+    });
+  } catch (e) {
+    console.warn("SynthID Check: opening next to the source tab failed", e);
+    return browser.tabs.create({ ...props, windowId: sourceTab.windowId });
+  }
+}
+
+function openSynthId(file, sourceUrl, sourceTab) {
+  const run = (async () => {
+    // The content script's host permission can be revoked in about:addons.
+    let hasAccess = false;
+    try {
+      hasAccess = await browser.permissions.contains({ origins: [SYNTHID_ORIGIN_PATTERN] });
+    } catch {
+      hasAccess = false;
+    }
+    if (!hasAccess) throw new Notice(TEXT.synthidAccess, "warn");
+
+    const settings = await getSettings();
+    const newTab = await createTabNear(sourceTab, {
+      url: SYNTHID_URL,
       active: settings.openInForeground !== false,
     });
-    await Pending.put({
-      tabId: newTab.id,
-      blob: file.blob,
-      name: file.name,
-      type: file.type,
-      sourceUrl,
-      createdAt: Date.now(),
-      autoAttach: true,
-      attachedAt: null,
-      signInSeen: false,
-    });
+    await Pending.put(
+      {
+        tabId: newTab.id,
+        blob: file.blob,
+        name: file.name,
+        type: file.type,
+        sourceUrl,
+        createdAt: Date.now(),
+        autoAttach: true,
+        attachedAt: null,
+        signInSeen: false,
+      },
+      Boolean(sourceTab.incognito || newTab.incognito),
+    );
   })();
   openInFlight = run.catch(() => {});
   return run;
@@ -493,10 +647,8 @@ async function openGrantPage(media, ctx, pattern) {
     console.warn("SynthID Check: storage.session unavailable", e);
   }
   const params = new URLSearchParams({ origin: pattern, id: requestId });
-  await browser.tabs.create({
+  await createTabNear(ctx.tab, {
     url: browser.runtime.getURL(GRANT_PAGE) + "?" + params,
-    index: ctx.tab.index + 1,
-    openerTabId: ctx.tab.id,
     active: true,
   });
 }
@@ -536,7 +688,13 @@ async function onGranted(requestId) {
   } catch {
     return { ok: false };
   }
-  acquire(entry.media, { tab, frameId: entry.frameId, frameUrl: entry.frameUrl });
+  acquire(entry.media, {
+    tab,
+    frameId: entry.frameId,
+    frameUrl: entry.frameUrl,
+    pageUrl: tab.url,
+    fromGrant: true,
+  });
   return { ok: true };
 }
 
@@ -602,7 +760,12 @@ browser.runtime.onMessage.addListener((msg, sender) => {
 
     case "synthid:picked":
       if (sender.tab) {
-        const ctx = { tab: sender.tab, frameId: sender.frameId ?? 0, frameUrl: sender.url || sender.tab.url };
+        const ctx = {
+          tab: sender.tab,
+          frameId: sender.frameId ?? 0,
+          frameUrl: sender.url || sender.tab.url,
+          pageUrl: sender.tab.url,
+        };
         if (msg.media && msg.media.url) acquire(msg.media, ctx);
         else notify(sender.tab.id, { state: "info", message: TEXT.nothingFound });
       }
@@ -624,6 +787,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
 // Cleanup
 
 browser.tabs.onRemoved.addListener((tabId) => {
+  noticeQueues.delete(tabId);
   Pending.remove(tabId).catch(() => {});
 });
 

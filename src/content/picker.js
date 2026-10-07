@@ -1,5 +1,5 @@
 (function () {
-  if (globalThis.SynthIDPicker) return;
+  if (typeof globalThis.SynthIDPicker?.start === "function") return;
 
   let active = null;
 
@@ -59,7 +59,14 @@
       e.stopImmediatePropagation();
     }
 
+    // Pages can dispatch synthetic events; only real user input may pick or cancel.
+    function onMouseButton(e) {
+      if (!e.isTrusted) return;
+      swallow(e);
+    }
+
     function onClick(e) {
+      if (!e.isTrusted) return;
       swallow(e);
       let media = null;
       try {
@@ -78,6 +85,7 @@
     }
 
     function onKey(e) {
+      if (!e.isTrusted) return;
       if (e.key === "Escape") {
         swallow(e);
         stop();
@@ -89,8 +97,8 @@
       window.removeEventListener("mousemove", onMove, true);
       window.removeEventListener("click", onClick, true);
       window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("mousedown", swallow, true);
-      window.removeEventListener("mouseup", swallow, true);
+      window.removeEventListener("mousedown", onMouseButton, true);
+      window.removeEventListener("mouseup", onMouseButton, true);
       window.removeEventListener("scroll", hideOutline, true);
       outline.remove();
       hint.remove();
@@ -100,8 +108,8 @@
     window.addEventListener("mousemove", onMove, true);
     window.addEventListener("click", onClick, true);
     window.addEventListener("keydown", onKey, true);
-    window.addEventListener("mousedown", swallow, true);
-    window.addEventListener("mouseup", swallow, true);
+    window.addEventListener("mousedown", onMouseButton, true);
+    window.addEventListener("mouseup", onMouseButton, true);
     window.addEventListener("scroll", hideOutline, true);
     active = { stop };
   }

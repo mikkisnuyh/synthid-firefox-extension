@@ -90,6 +90,12 @@
     });
   }
 
+  function clear() {
+    return withStore("readwrite", (store) => {
+      store.clear();
+    });
+  }
+
   function purgeExpired() {
     const now = Date.now();
     return withStore("readwrite", (store) => {
@@ -103,5 +109,5 @@
     });
   }
 
-  globalThis.SynthIDPending = { TTL_MS, put, get, update, remove, purgeExpired };
+  globalThis.SynthIDPending = { TTL_MS, put, get, update, remove, clear, purgeExpired };
 })();

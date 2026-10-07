@@ -1,9 +1,11 @@
 (function () {
-  if (globalThis.SynthIDResolve) {
+  if (typeof globalThis.SynthIDResolve?.fromElement === "function") {
     if (typeof module !== "undefined") module.exports = globalThis.SynthIDResolve;
     return;
   }
 
+  // Same value as SynthIDMedia.MAX_BYTES (this script can't see the background's globals).
+  const MAX_BLOB_BYTES = 200 * 1024 * 1024;
   const OVERLAY_SELECTOR = "[data-synthid-picker]";
   const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -159,7 +161,16 @@
     try {
       const r = el.getBoundingClientRect();
       if (r && (r.width > 0 || r.height > 0)) {
-        stack = stackAt(r.left + r.width / 2, r.top + r.height / 2);
+        // Hit-test the visible part of the box: a big overlay's center can be off-screen.
+        const win = globalThis.window || globalThis;
+        const doc = globalThis.document;
+        const vw = Number.isFinite(win.innerWidth) ? win.innerWidth : doc.documentElement.clientWidth;
+        const vh = Number.isFinite(win.innerHeight) ? win.innerHeight : doc.documentElement.clientHeight;
+        const left = Math.max(r.left, 0);
+        const top = Math.max(r.top, 0);
+        const right = Math.min(r.left + r.width, vw);
+        const bottom = Math.min(r.top + r.height, vh);
+        if (right > left && bottom > top) stack = stackAt((left + right) / 2, (top + bottom) / 2);
       }
     } catch (e) {}
     for (const node of stack) {
@@ -178,6 +189,7 @@
     try {
       const res = await fetch(url);
       const blob = await res.blob();
+      if (blob.size > MAX_BLOB_BYTES) return { ok: false, error: "too large" };
       return { ok: true, blob, type: blob.type };
     } catch (e) {
       return { ok: false, error: String(e) };

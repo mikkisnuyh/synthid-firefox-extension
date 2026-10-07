@@ -2,6 +2,8 @@
 
 (function () {
   const ALL = "<all_urls>";
+  // Content-script host permission: removing it would break the extension.
+  const SYNTHID_ORIGIN = "https://synthid.com/*";
   const DEFAULTS = { openInForeground: true };
 
   const foreground = document.getElementById("openInForeground");
@@ -42,7 +44,7 @@
       : "SynthID Check asks before downloading media from a new site.";
     toggleAll.textContent = hasAll ? "Remove access to all sites" : "Allow all sites";
 
-    const specific = origins.filter((o) => o !== ALL && o !== "*://*/*");
+    const specific = origins.filter((o) => o !== ALL && o !== "*://*/*" && o !== SYNTHID_ORIGIN);
     sites.textContent = "";
     for (const origin of specific) {
       const li = document.createElement("li");

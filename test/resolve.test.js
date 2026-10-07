@@ -92,6 +92,34 @@ test("overlay div above an img resolves via elementsFromPoint", () => {
   assert.deepEqual(seen, [60, 45]);
 });
 
+test("fromElement hit-tests the visible part of a box with an off-screen center", () => {
+  const doc = setup('<img id="i" src="a.png"><div id="o"></div>');
+  const img = doc.getElementById("i");
+  const o = doc.getElementById("o");
+  const { innerWidth, innerHeight } = dom.window;
+  // Box starts on screen but extends far below the viewport.
+  o.getBoundingClientRect = () => ({ left: 0, top: 100, width: 200, height: 10000 });
+  let seen;
+  doc.elementsFromPoint = (x, y) => { seen = [x, y]; return [o, img, doc.body]; };
+  assert.equal(R.fromElement(o).url, "https://example.com/dir/a.png");
+  assert.deepEqual(seen, [100, (100 + innerHeight) / 2]);
+  // Box straddling the left edge: x is clamped to 0.
+  o.getBoundingClientRect = () => ({ left: -400, top: 0, width: 600, height: 50 });
+  R.fromElement(o);
+  assert.deepEqual(seen, [100, 25]);
+  assert.ok(innerWidth > 0);
+});
+
+test("fromElement skips the point lookup when the box is entirely off-screen", () => {
+  const doc = setup('<img id="i" src="a.png"><div id="o"></div>');
+  const o = doc.getElementById("o");
+  o.getBoundingClientRect = () => ({ left: 0, top: 5000, width: 100, height: 100 });
+  let called = false;
+  doc.elementsFromPoint = () => { called = true; return [doc.getElementById("i")]; };
+  assert.equal(R.fromElement(o), null);
+  assert.equal(called, false);
+});
+
 test("fromPoint skips picker overlay", () => {
   const doc = setup('<img id="i" src="a.png"><div id="o" data-synthid-picker="outline"></div>');
   doc.elementsFromPoint = () => [doc.getElementById("o"), doc.getElementById("i")];
