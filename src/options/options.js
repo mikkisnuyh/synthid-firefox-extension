@@ -34,6 +34,7 @@
   let isMac = false;
   let commands = [];
   let recording = null; // name of the command being recorded
+  let saving = false; // a recorded shortcut is being saved
   let renderToken = 0;
 
   function showError(e) {
@@ -213,27 +214,41 @@
     renderShortcuts();
   }
 
-  function stopRecording(keepStatus) {
+  function stopRecording(keepStatus, deferRender) {
     if (recording === null) return;
     recording = null;
+    saving = false;
     document.removeEventListener("keydown", onRecordKey, true);
     document.removeEventListener("pointerdown", onRecordPointer, true);
     if (!keepStatus) setShortcutStatus("");
-    renderShortcuts();
+    if (deferRender) {
+      // Re-rendering now would remove the button being pressed before its click fires.
+      window.addEventListener("pointerup", () => setTimeout(renderShortcuts, 0), { once: true, capture: true });
+    } else {
+      renderShortcuts();
+    }
   }
 
   function onRecordPointer(e) {
     // Clicking elsewhere cancels; the recording row's own buttons handle themselves.
     if (e.target instanceof Element && e.target.closest(".shortcut-row.recording")) return;
-    stopRecording();
+    stopRecording(false, true);
+  }
+
+  // The key as Firefox matches it: by the character it types, so the shortcut works on
+  // AZERTY, QWERTZ or Dvorak. The physical key (code) is the fallback, e.g. when Shift or
+  // Option changes the character.
+  function keyName(e) {
+    if (typeof e.key === "string" && /^[A-Za-z0-9]$/.test(e.key)) return e.key.toUpperCase();
+    return /^Key[A-Z]$/.test(e.code) ? e.code.slice(3)
+      : /^Digit[0-9]$/.test(e.code) ? e.code.slice(5)
+      : /^F([1-9]|1[0-2])$/.test(e.code) ? e.code
+      : KEY_NAMES[e.code];
   }
 
   // Returns { shortcut } or { problem } for a keydown event.
   function buildShortcut(e) {
-    const key = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3)
-      : /^Digit[0-9]$/.test(e.code) ? e.code.slice(5)
-      : /^F([1-9]|1[0-2])$/.test(e.code) ? e.code
-      : KEY_NAMES[e.code];
+    const key = keyName(e);
     if (!key) {
       return { problem: "That key can't be used. Use a letter, number, F1 to F12, Comma, Period, Space, or one of Home, End, PageUp, PageDown, Insert, Delete or the arrow keys." };
     }
@@ -246,6 +261,9 @@
     if (e.altKey) mods.push("Alt");
     const hasPrimary = mods.length > 0;
     if (e.shiftKey) mods.push("Shift");
+    if (mods.length > 2) {
+      return { problem: "Firefox allows at most two modifier keys in a shortcut." };
+    }
     const isFunctionKey = /^F\d+$/.test(key);
     if (!hasPrimary && !isFunctionKey) {
       return { problem: "A shortcut needs at least one of " + (isMac ? "Command, Control or Option" : "Ctrl or Alt") + " (Shift alone isn't enough), unless it is F1 to F12." };
@@ -258,6 +276,8 @@
     if (MODIFIER_CODES.test(e.code) || e.key === "AltGraph") return;
     e.preventDefault();
     e.stopPropagation();
+    // Holding the keys repeats them; a second combination waits for the first to be saved.
+    if (e.repeat || saving) return;
     if (e.code === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
       stopRecording();
       return;
@@ -268,15 +288,20 @@
       return;
     }
     const name = recording;
-    browser.commands.update({ name, shortcut: result.shortcut }).then(
-      () => {
-        stopRecording();
-        refreshCommands().catch(showError);
-      },
-      (err) => {
-        setShortcutStatus((err && err.message ? err.message : String(err)) + " Try another shortcut, or Esc to cancel.", true);
-      },
-    );
+    saving = true;
+    // commands.update throws synchronously for a value its schema rejects.
+    Promise.resolve()
+      .then(() => browser.commands.update({ name, shortcut: result.shortcut }))
+      .then(
+        () => {
+          stopRecording();
+          refreshCommands().catch(showError);
+        },
+        (err) => {
+          saving = false;
+          setShortcutStatus((err && err.message ? err.message : String(err)) + " Try another shortcut, or Esc to cancel.", true);
+        },
+      );
   }
 
   if (browser.commands.onChanged) {

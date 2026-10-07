@@ -292,18 +292,34 @@
     return downPoint;
   }
 
-  // An image dragged by a link (or another draggable element) around it. The link is the
-  // dragstart target then, not the image.
+  function containsPoint(el, point) {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom;
+  }
+
+  // An image dragged by the link around it: the link is the dragstart target then, not the image.
   function imageInside(target, e, point) {
     const resolve = globalThis.SynthIDResolve;
     const types = e.dataTransfer ? Array.from(e.dataTransfer.types || []) : [];
     // Firefox marks image drags with this type; then whatever is under the pointer is the image.
     const markedImage = types.includes(NATIVE_IMAGE);
-    const under = resolve.fromPoint(point.x, point.y);
-    if (under && (markedImage || (isImageElement(under.element) && target.contains(under.element)))) return under;
-    // A link that is just an image (a logo, an avatar), in case the type isn't exposed.
-    if (markedImage || !(target.textContent || "").trim()) {
-      const imgs = target.querySelectorAll("img");
+    if (markedImage) {
+      const under = resolve.fromPoint(point.x, point.y);
+      if (under) return under;
+    }
+    // The type may not be exposed to content. Only link drags count then: a site's own
+    // draggable cards and tiles (sortable lists, file grids) often contain images too.
+    const link = target.closest("a[href]");
+    if (!link && !markedImage) return null;
+    const scope = link || target;
+    // The image whose box contains the point. Hit testing would skip images with
+    // pointer-events: none, which links around avatars and logos often use.
+    for (const el of scope.querySelectorAll("img, image")) {
+      if (containsPoint(el, point)) return resolve.fromElement(el);
+    }
+    // A link that is just an image (a logo, an avatar).
+    if (markedImage || !(scope.textContent || "").trim()) {
+      const imgs = scope.querySelectorAll("img");
       if (imgs.length === 1) return resolve.fromElement(imgs[0]);
     }
     return null;
@@ -335,12 +351,14 @@
     const media = mediaForDrag(e, point);
     if (!media) return;
     const gen = generation;
+    // Start reading the setting now; the first read in a frame goes to the parent process.
+    const cornerReady = getCorner();
     // Show after the page's own dragstart handlers ran: if one cancelled the drag, no drag
     // (and no dragend to hide the zone) follows.
     showTimer = setTimeout(() => {
       showTimer = null;
       if (gen !== generation || e.defaultPrevented) return;
-      getCorner().then((corner) => {
+      cornerReady.then((corner) => {
         if (gen !== generation) return;
         visibleArea((area) => {
           if (gen !== generation || !area) return;
