@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "name": "SynthID Check",
+  "version": "0.1.0",
+  "description": "Right-click an image, video or audio element to check it for a SynthID watermark on synthid.com.",
+  "icons": {
+    "48": "icons/icon.svg",
+    "96": "icons/icon.svg"
+  },
+  "background": {
+    "scripts": [
+      "src/lib/media.js",
+      "src/lib/pending.js",
+      "src/background.js"
+    ]
+  },
+  "permissions": [
+    "menus",
+    "activeTab",
+    "scripting",
+    "storage",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://synthid.com/*"
+      ],
+      "js": [
+        "src/content/banner.js",
+        "src/content/synthid.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "SynthID Check",
+    "default_icon": "icons/icon.svg",
+    "default_popup": "src/popup/popup.html"
+  },
+  "commands": {
+    "start-picker": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      },
+      "description": "Pick media on the page to check with SynthID"
+    },
+    "_execute_action": {
+      "description": "Open the SynthID Check menu"
+    }
+  },
+  "options_ui": {
+    "page": "src/options/options.html"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "@synthid-check",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "websiteContent"
+        ]
+      }
+    }
+  }
+}

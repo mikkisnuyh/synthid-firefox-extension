@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SynthID Check settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body class="page-options">
+  <main>
+    <header class="intro">
+      <img src="../../icons/icon.svg" alt="" width="40" height="40">
+      <div>
+        <h1>SynthID Check <span id="version" class="version"></span></h1>
+        <p class="muted">
+          Checks images, video and audio on any website for a SynthID watermark, the invisible mark
+          that Google's AI tools and partners such as OpenAI add to what they generate. The file is
+          handed to Google's official detector at synthid.com, where you sign in and see the result.
+        </p>
+      </div>
+    </header>
+
+    <section>
+      <h2>How to use</h2>
+      <ul class="usage">
+        <li>Right-click an image, video or audio element and choose <strong>Check with SynthID</strong>.</li>
+        <li>If a site covers its media with an overlay, right-click the spot and choose
+          <strong>Find media under the cursor and check with SynthID</strong>.</li>
+        <li>Or click the toolbar button, choose <strong>Pick media on this page</strong>, then click the media.
+          <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> starts this directly.</li>
+      </ul>
+      <p class="muted small">
+        Only SynthID watermarks can be detected. If none is found, that doesn't prove the media was made
+        by a person. Text can't be checked.
+      </p>
+    </section>
+
+    <section>
+      <h2>General</h2>
+      <label class="check">
+        <input type="checkbox" id="openInForeground">
+        <span>Switch to the synthid.com tab when a check starts</span>
+      </label>
+    </section>
+
+    <section>
+      <h2>Website access</h2>
+      <p class="muted">
+        To check a file, SynthID Check downloads the original from the site that hosts it, which is
+        often a different site than the page you're on (for example an image CDN). That's why it needs
+        access to all websites. Files are only downloaded when you choose to check them.
+      </p>
+      <p id="access-status" class="status-line"></p>
+      <div class="buttons" id="restore-block" hidden>
+        <button type="button" id="restore" class="primary">Allow access to all websites</button>
+      </div>
+      <p id="error" class="status" role="status" hidden></p>
+    </section>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>
