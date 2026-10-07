@@ -70,8 +70,6 @@
   let generation = 0;
   let showTimer = null;
   let probe = null;
-  // Where the last trusted mousedown was: a drag starts there.
-  let downPoint = null;
   // The corner setting, read once and dropped when it changes.
   let cornerSetting = null;
 
@@ -282,51 +280,8 @@
     host.remove();
   }
 
-  function isImageElement(el) {
-    return !!(el && el.nodeType === 1 && IMAGE_TAGS.includes(el.localName));
-  }
-
-  // Where the drag started. Falls back to the mousedown point in case the event has no coordinates.
-  function dragPoint(e) {
-    if (e.clientX || e.clientY || !downPoint) return { x: e.clientX, y: e.clientY };
-    return downPoint;
-  }
-
-  function containsPoint(el, point) {
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom;
-  }
-
-  // An image dragged by the link around it: the link is the dragstart target then, not the image.
-  function imageInside(target, e, point) {
-    const resolve = globalThis.SynthIDResolve;
-    const types = e.dataTransfer ? Array.from(e.dataTransfer.types || []) : [];
-    // Firefox marks image drags with this type; then whatever is under the pointer is the image.
-    const markedImage = types.includes(NATIVE_IMAGE);
-    if (markedImage) {
-      const under = resolve.fromPoint(point.x, point.y);
-      if (under) return under;
-    }
-    // The type may not be exposed to content. Only link drags count then: a site's own
-    // draggable cards and tiles (sortable lists, file grids) often contain images too.
-    const link = target.closest("a[href]");
-    if (!link && !markedImage) return null;
-    const scope = link || target;
-    // The image whose box contains the point. Hit testing would skip images with
-    // pointer-events: none, which links around avatars and logos often use.
-    for (const el of scope.querySelectorAll("img, image")) {
-      if (containsPoint(el, point)) return resolve.fromElement(el);
-    }
-    // A link that is just an image (a logo, an avatar).
-    if (markedImage || !(scope.textContent || "").trim()) {
-      const imgs = scope.querySelectorAll("img");
-      if (imgs.length === 1) return resolve.fromElement(imgs[0]);
-    }
-    return null;
-  }
-
   // The image under a drag, or null when something else (text, a plain link) is dragged.
-  function mediaForDrag(e, point) {
+  function mediaForDrag(e) {
     const resolve = globalThis.SynthIDResolve;
     if (typeof resolve?.fromElement !== "function") return null;
     let hit = null;
@@ -335,7 +290,13 @@
       const path = typeof e.composedPath === "function" ? e.composedPath() : [];
       const target = path[0] && path[0].nodeType === 1 ? path[0] : e.target;
       if (!target || target.nodeType !== 1) return null;
-      hit = isImageElement(target) ? resolve.fromElement(target) : imageInside(target, e, point);
+      if (IMAGE_TAGS.includes(target.localName)) {
+        hit = resolve.fromElement(target);
+      } else {
+        // An image inside a link drags as the link; Firefox marks image drags with this type.
+        const types = e.dataTransfer ? Array.from(e.dataTransfer.types || []) : [];
+        if (types.includes(NATIVE_IMAGE)) hit = resolve.fromPoint(e.clientX, e.clientY);
+      }
     } catch (err) {
       return null;
     }
@@ -347,8 +308,8 @@
     // Pages can dispatch synthetic drag events; only a real drag may show the zone.
     if (!e.isTrusted) return;
     hide();
-    const point = dragPoint(e);
-    const media = mediaForDrag(e, point);
+    const point = { x: e.clientX, y: e.clientY };
+    const media = mediaForDrag(e);
     if (!media) return;
     const gen = generation;
     // Start reading the setting now; the first read in a frame goes to the parent process.
@@ -421,12 +382,7 @@
   // dragend from us. No mouse events reach the page during a drag; a release or a move with no
   // button down means it's over.
   function onMouse(e) {
-    if (!e.isTrusted) return;
-    if (e.type === "mousedown") {
-      downPoint = { x: e.clientX, y: e.clientY };
-      return;
-    }
-    if (!dragged) return;
+    if (!dragged || !e.isTrusted) return;
     if (e.type === "mouseup" || e.buttons === 0) hide();
   }
 
@@ -436,7 +392,6 @@
   window.addEventListener("dragleave", onDragLeave, true);
   window.addEventListener("drop", onDrop, true);
   window.addEventListener("dragend", onDragEndOrPageHide, true);
-  window.addEventListener("mousedown", onMouse, true);
   window.addEventListener("mousemove", onMouse, true);
   window.addEventListener("mouseup", onMouse, true);
   window.addEventListener("pagehide", onDragEndOrPageHide, true);

@@ -2,19 +2,23 @@
 
 const pickButton = document.getElementById("pick");
 
-// Describe drag and drop as currently set up.
+// Describe drag and drop as currently set up. Runs on load and whenever the
+// main view is shown again, so changes made in Settings show up.
 const CORNERS = ["top-right", "bottom-right", "top-left", "bottom-left"];
-browser.storage.sync.get({ dropZone: true, dropZoneCorner: "top-right" }).then(
-  (s) => {
-    const on = s.dropZone !== false;
-    document.getElementById("way-drag").hidden = !on;
-    document.getElementById("way-drag-off").hidden = on;
-    document.getElementById("corner").textContent = CORNERS.includes(s.dropZoneCorner)
-      ? s.dropZoneCorner
-      : "top-right";
-  },
-  (e) => console.warn("SynthID Check: couldn't read the settings", e),
-);
+function refreshDragText() {
+  return browser.storage.sync.get({ dropZone: true, dropZoneCorner: "top-right" }).then(
+    (s) => {
+      const on = s.dropZone !== false;
+      document.getElementById("way-drag").hidden = !on;
+      document.getElementById("way-drag-off").hidden = on;
+      document.getElementById("corner").textContent = CORNERS.includes(s.dropZoneCorner)
+        ? s.dropZoneCorner
+        : "top-right";
+    },
+    (e) => console.warn("SynthID Check: couldn't read the settings", e),
+  );
+}
+refreshDragText();
 const note = document.getElementById("note");
 
 // Access to all websites is granted at install but the user can revoke it.
@@ -63,7 +67,34 @@ document.getElementById("open-site").addEventListener("click", async () => {
   window.close();
 });
 
-document.getElementById("settings").addEventListener("click", async () => {
-  await browser.runtime.openOptionsPage();
-  window.close();
+// View switching. The popup always opens on the main view.
+const mainView = document.getElementById("main-view");
+const settingsView = document.getElementById("settings-view");
+const settingsButton = document.getElementById("settings");
+const backButton = document.getElementById("back");
+
+function showSettings() {
+  mainView.hidden = true;
+  settingsView.hidden = false;
+  window.SettingsView.refresh();
+  document.documentElement.scrollTop = 0;
+  backButton.focus();
+}
+
+function showMain() {
+  window.SettingsView.cancelRecording();
+  settingsView.hidden = true;
+  mainView.hidden = false;
+  refreshDragText();
+  settingsButton.focus();
+}
+
+settingsButton.addEventListener("click", showSettings);
+backButton.addEventListener("click", showMain);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || e.defaultPrevented || settingsView.hidden) return;
+  if (window.SettingsView.isRecording()) return;
+  e.preventDefault();
+  showMain();
 });

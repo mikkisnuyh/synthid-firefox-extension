@@ -21,8 +21,6 @@
   const dropZone = document.getElementById("dropZone");
   const corner = document.getElementById("dropZoneCorner");
   const cornerField = corner.parentElement;
-  const usageDrag = document.getElementById("usage-drag");
-  const usageShortcut = document.getElementById("usage-shortcut");
   const shortcutList = document.getElementById("shortcuts");
   const shortcutStatus = document.getElementById("shortcut-status");
   const accessStatus = document.getElementById("access-status");
@@ -58,17 +56,6 @@
     corner.value = normalizeCorner(s.dropZoneCorner);
     corner.disabled = !dropZone.checked;
     cornerField.classList.toggle("disabled", corner.disabled);
-    renderDragUsage();
-  }
-
-  function renderDragUsage() {
-    if (!dropZone.checked) {
-      usageDrag.textContent =
-        "Drag and drop is turned off. You can turn it on below under Drag and drop.";
-      return;
-    }
-    usageDrag.textContent =
-      "Drag an image and drop it on the box that appears in the " + corner.value + " corner.";
   }
 
   async function loadSettings() {
@@ -82,7 +69,6 @@
   dropZone.addEventListener("change", () => {
     corner.disabled = !dropZone.checked;
     cornerField.classList.toggle("disabled", corner.disabled);
-    renderDragUsage();
     browser.storage.sync
       .set({ dropZone: dropZone.checked })
       .then(() => browser.runtime.sendMessage({ type: "synthid:syncDropZone" }))
@@ -90,7 +76,6 @@
   });
 
   corner.addEventListener("change", () => {
-    renderDragUsage();
     browser.storage.sync.set({ dropZoneCorner: normalizeCorner(corner.value) }).catch(showError);
   });
 
@@ -115,19 +100,6 @@
       kbd.textContent = part;
       container.appendChild(kbd);
     });
-  }
-
-  function renderUsageShortcut() {
-    const cmd = commands.find((c) => c.name === "start-picker");
-    usageShortcut.textContent = "";
-    if (cmd && cmd.shortcut) {
-      usageShortcut.append("The keyboard shortcut ");
-      const keys = document.createElement("span");
-      appendShortcut(keys, cmd.shortcut);
-      usageShortcut.append(keys, " starts this directly.");
-    } else {
-      usageShortcut.textContent = "No keyboard shortcut is set for this. You can add one below.";
-    }
   }
 
   function commandLabel(cmd) {
@@ -166,7 +138,7 @@
       if (isRecording) keys.textContent = "Waiting for keys…";
       else appendShortcut(keys, cmd.shortcut);
 
-      const actions = document.createElement("span");
+      const actions = document.createElement("div");
       actions.className = "shortcut-actions";
       actions.append(
         makeButton(isRecording ? "Cancel" : "Change", () => {
@@ -181,7 +153,10 @@
         ),
       );
 
-      row.append(name, keys, actions);
+      const line = document.createElement("div");
+      line.className = "shortcut-line";
+      line.append(name, keys);
+      row.append(line, actions);
       shortcutList.appendChild(row);
     }
   }
@@ -192,7 +167,6 @@
     if (token !== renderToken) return;
     commands = list;
     renderShortcuts();
-    renderUsageShortcut();
   }
 
   async function runCommandAction(name, action) {
@@ -307,7 +281,7 @@
   if (browser.commands.onChanged) {
     browser.commands.onChanged.addListener(() => refreshCommands().catch(showError));
   }
-  // Shortcuts may also be edited in Firefox's add-ons manager while this tab is open.
+  // Shortcuts may also be edited in Firefox's add-ons manager while the popup is open.
   window.addEventListener("focus", () => {
     if (recording === null) refreshCommands().catch(showError);
   });
@@ -334,8 +308,6 @@
   browser.permissions.onAdded.addListener(() => render().catch(showError));
   browser.permissions.onRemoved.addListener(() => render().catch(showError));
 
-  document.getElementById("version").textContent = "v" + browser.runtime.getManifest().version;
-
   browser.runtime
     .getPlatformInfo()
     .then((info) => { isMac = info.os === "mac"; }, () => {})
@@ -343,4 +315,16 @@
     .catch(showError);
   loadSettings().catch(showError);
   render().catch(showError);
+
+  // Used by popup.js, which switches between the main and the settings view.
+  window.SettingsView = {
+    isRecording: () => recording !== null,
+    // Called whenever the view is shown or left.
+    cancelRecording: () => stopRecording(),
+    refresh() {
+      loadSettings().catch(showError);
+      refreshCommands().catch(showError);
+      render().catch(showError);
+    },
+  };
 })();
