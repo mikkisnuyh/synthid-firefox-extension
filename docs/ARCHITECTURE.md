@@ -122,3 +122,14 @@ Items are created in `runtime.onInstalled` (and `runtime.onStartup`, after `menu
 5. After attaching, watch for about 5 s for the sign-in dialog (text "Please sign in before detection"). Then send `synthid:attached` with `signInRequired`. If it's needed, the banner says "Sign in, then press Retry". Buttons: Retry, Copy image.
 6. **Copy image:** `navigator.clipboard.write([new ClipboardItem({[type]: blob})])` inside the click handler; on success the banner says "Copied, press Ctrl+V on the page". Only for image types; audio and video get a hint to drag the file in instead.
 7. On dismiss, send `synthid:clear`.
+
+## Hardening added after review
+
+- **Dismiss and Terms.** `synthid.js` stops the flow as soon as the banner is dismissed. It never attaches while the "Agree and continue" dialog is visible: it watches for the dialog while waiting for the file input, and it requires a 2-second period with no dialog before attaching. A Retry or "Attach again" click goes through the same checks.
+- **Private windows.** Pending files from private windows are kept only in the background's memory, never in IndexedDB. All pending records are cleared on browser start, because tab ids restart each session.
+- **Script injection.** Every `scripting.executeScript` call uses `injectImmediately: true`, so notices and pick mode work on pages that are still loading. Each tab has its own notice queue.
+- **Pick mode.** It ignores synthetic (`!isTrusted`) events, so a page can't choose the media for the user.
+- **Overlays.** `fromElement` hit-tests the centre of the part of the element that is on screen.
+- **Downloads.** The size cap is enforced while streaming the download. After a network error (for example a redirect to a host the extension can't access), there is one fallback to an in-page fetch for the page's own origin, then a notice. The grant page only opens when the origin isn't granted yet.
+- **Permissions.** The options page doesn't list `https://synthid.com/*` as removable. If that access has been revoked anyway, the background shows a notice instead of opening a tab where nothing can be attached.
+- **Re-injection guards.** They check for function types (`typeof X?.fn === "function"`), so named page elements (window named properties) can't spoof them.
