@@ -450,7 +450,8 @@ async function getFile(media, ctx) {
     if (result) return result;
   }
 
-  if (ctx.fromGrant) throw new Notice(TEXT.fetchFailed("network error"));
+  // The grant page can only help when the origin isn't granted yet.
+  if (ctx.fromGrant || granted) throw new Notice(TEXT.fetchFailed("network error"));
   await openGrantPage(media, ctx, pattern);
   return null;
 }
