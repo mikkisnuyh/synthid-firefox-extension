@@ -3,28 +3,78 @@
 <head>
   <meta charset="utf-8">
   <title>SynthID Check</title>
-  <link rel="stylesheet" href="../options/options.css">
+  <link rel="stylesheet" href="base.css">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body class="page-popup">
-  <header>
-    <img src="../../icons/icon.svg" alt="" width="24" height="24">
-    <h1>SynthID Check</h1>
-  </header>
+  <div id="main-view">
+    <header>
+      <img src="../../icons/icon.svg" alt="" width="24" height="24">
+      <h1>SynthID Check</h1>
+    </header>
 
-  <button type="button" id="pick" class="primary wide">Pick media on this page</button>
-  <p id="note" class="status" role="status" hidden>Pick mode isn't available on this page.</p>
+    <ul class="ways">
+      <li id="way-drag">
+        <strong>Drag</strong> an image and drop it on the box that appears in the
+        <span id="corner">top-right</span> corner.
+      </li>
+      <li id="way-drag-off" hidden>
+        <strong>Drag and drop</strong> is turned off. You can turn it on in Settings.
+      </li>
+      <li><strong>Right-click</strong> any image, video or audio and choose <em>Check with SynthID</em>.</li>
+      <li><strong>Pick</strong> media on this page and click the one to check:</li>
+    </ul>
 
-  <p class="muted hint">
-    You can also right-click any image, video or audio and choose
-    <strong>Check with SynthID</strong>.
-  </p>
+    <button type="button" id="pick" class="primary wide">Pick media on this page</button>
+    <p id="note" class="status" role="status" hidden>Pick mode isn't available on this page.</p>
 
-  <div class="secondary">
-    <button type="button" id="open-site" class="link">Open synthid.com</button>
-    <button type="button" id="settings" class="link">Settings</button>
+    <div class="secondary">
+      <button type="button" id="open-site" class="link">Open synthid.com</button>
+      <button type="button" id="settings" class="link">Settings</button>
+    </div>
   </div>
 
+  <div id="settings-view" hidden>
+    <header class="settings-header">
+      <button type="button" id="back" class="back" aria-label="Back">&larr;</button>
+      <h1>Settings</h1>
+    </header>
+
+    <section class="rows">
+      <label class="row">
+        <span>Drop zone</span>
+        <input type="checkbox" id="dropZone">
+      </label>
+      <label class="row" id="corner-row">
+        <span>Corner</span>
+        <select id="dropZoneCorner">
+          <option value="top-right">Top right</option>
+          <option value="bottom-right">Bottom right</option>
+          <option value="top-left">Top left</option>
+          <option value="bottom-left">Bottom left</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Switch to synthid.com tab</span>
+        <input type="checkbox" id="openInForeground">
+      </label>
+    </section>
+
+    <section>
+      <h2>Shortcuts</h2>
+      <ul id="shortcuts" class="shortcuts"></ul>
+      <p id="shortcut-status" class="small" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <section id="access-block" hidden>
+      <p id="access-status" class="status"></p>
+      <button type="button" id="restore" class="primary wide">Allow access</button>
+    </section>
+
+    <p id="error" class="status" role="status" hidden></p>
+  </div>
+
+  <script src="settings.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

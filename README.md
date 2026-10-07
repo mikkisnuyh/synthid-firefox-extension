@@ -1,12 +1,13 @@
 # SynthID Check
 
-Right-click an image, video, or audio element to check it for a SynthID watermark. The original file is attached to Google's official SynthID Detector at synthid.com in a new tab, where you sign in and see the detection result.
+Drag an image onto the drop box, or right-click an image, video, or audio element, to check it for a SynthID watermark. The original file is attached to Google's official SynthID Detector at synthid.com in a new tab, where you sign in and see the detection result.
 
 ## How to use
 
+- **Drag and drop:** Drag an image on a page. A box "Drop here to check with SynthID" appears in the top-right corner by default (the other corner on the same side if you start dragging from there). Drop the image on it to start the check. The box goes away when the drag ends. You can choose the corner, or turn the drop zone off, in the toolbar menu's settings. A new corner applies right away; turning it on or off applies to pages you open or reload afterwards.
 - **Context menu:** Right-click an image, video, or audio element and select "Check with SynthID". If the site covers the media with an overlay, use "Find media under the cursor and check with SynthID" from the page or frame context menu.
-- **Toolbar menu:** Click the extension icon to open its menu, then choose **Pick media on this page**. Media is highlighted as you move the cursor; click the one you want to check, or press Esc to cancel. The menu also links to synthid.com and the settings.
-- **Keyboard shortcut:** Press Alt+Shift+S to start pick mode directly, without the menu. You can change it, or add a shortcut that opens the menu, in about:addons → Manage Extension Shortcuts.
+- **Toolbar menu:** Click the extension icon to open its menu. It lists the ways to check (drag, right-click, pick). Choose **Pick media on this page** to pick: media is highlighted as you move the cursor; click the one you want to check, or press Esc to cancel. The menu also links to synthid.com and to its settings: **Settings** turns the menu into a settings view, with a **Back** button (Esc also goes back).
+- **Keyboard shortcut:** Press Alt+Shift+S to start pick mode directly, without the menu. You can change it, or add a shortcut that opens the menu, in the settings in the toolbar menu.
 
 ## What it can and can't detect
 
@@ -15,13 +16,14 @@ SynthID is Google DeepMind's invisible watermark. Google's AI products embed it,
 **Limitations:**
 - Only detects SynthID watermarks from Google and partner systems. This is not a general AI detector.
 - Absence of a detected watermark does not mean the media was created by a human.
-- Text is not supported. synthid.com and the Gemini app only check images, audio and video. There is no public SynthID text detector.
+- Text is not supported. synthid.com only checks images, audio and video. There is no public SynthID text detector.
 - If synthid.com reports an error while checking (for example after many checks in a short time), the extension shows "Unexpected error" with a **Try again** button.
+- Drag and drop only works for images the page lets you drag. Sites that disable image dragging or cover images with overlays won't show the drop zone (use the context menu, pick mode or "Find media under the cursor"). Video and audio are usually not draggable. Files dragged from the desktop or another window aren't supported. The box isn't shown in frames smaller than 240x160, and when you drag out of an embedded frame it appears inside that frame.
 - Streaming videos (e.g., YouTube) cannot be captured. Download and upload the file directly on synthid.com.
 
 ## Website access
 
-Firefox asks for access to all websites when you install the extension, and that's the only permission prompt. You can turn it off later in about:addons → SynthID Check → Permissions; checks then can't download files from other sites, and the extension tells you so. To turn it back on, use the button in the extension's settings or about:addons.
+Firefox asks for access to all websites when you install the extension, and that's the only permission prompt. You can turn it off later in about:addons → SynthID Check → Permissions; that is Firefox's own control. Checks then can't download files from other sites, and the extension tells you so: "Turn it back on in its settings: click the SynthID Check button in the toolbar, then Settings." There, **Allow access** turns it back on (it only shows while access is off). (Firefox only lets an extension open its toolbar menu from a click, so the notice can't open it for you.) Turning access off stays in about:addons.
 
 ## Requirements
 
@@ -39,7 +41,8 @@ Firefox asks for access to all websites when you install the extension, and that
 | `storage` | To store extension settings in Firefox Sync storage |
 | `clipboardWrite` | To copy images to the clipboard as a fallback |
 | Access to all websites (`host_permissions: <all_urls>`) | Granted once when you install. Needed to download the original file from whichever site hosts it (often a different site than the page, such as an image CDN). Files are only downloaded when you start a check. |
-| Content script on synthid.com only | To attach the file to synthid.com's own upload form and show status (it never signs in or accepts terms for you) |
+| Content script on synthid.com | To attach the file to synthid.com's own upload form and show status (it never signs in or accepts terms for you) |
+| Content script on all sites (only while the drop zone is on) | To show the drop zone while you drag an image. It only listens for drag events; it reads nothing and sends nothing until you drop an image on the zone. It uses the existing `scripting` and website access permissions, so there is no extra prompt. |
 
 **Data collection:** This extension declares `websiteContent` in its manifest. When you initiate a check, the file you choose is downloaded from the site hosting it and sent to synthid.com (Google's service). No other data is collected or sent.
 

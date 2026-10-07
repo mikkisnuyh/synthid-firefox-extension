@@ -36,25 +36,16 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-main { max-width: 640px; padding: 16px; }
-
-h1 { font-size: 1.3rem; margin: 0 0 0.75rem; overflow-wrap: anywhere; }
-h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
-h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; }
-
-section + section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border); }
+h1 { font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
+h2 { font-size: 0.95rem; margin: 0 0 0.5rem; }
 
 .muted { color: var(--muted); }
 .status-line { font-weight: 600; }
 .status { color: var(--warn); }
-
-.check { display: flex; gap: 0.5rem; align-items: center; cursor: pointer; }
-.check input { margin: 0; width: 1rem; height: 1rem; }
-
-.buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 1rem; }
+.small { font-size: 0.9em; }
 
 button {
   font: inherit;
@@ -75,16 +66,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); }
 button.link { background: none; border-color: transparent; color: var(--accent); padding: 0.2rem 0.4rem; }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
 
-.intro { display: flex; gap: 0.9rem; align-items: flex-start; margin-bottom: 1.5rem; }
-.intro img { flex: none; margin-top: 0.15rem; }
-.intro h1 { margin-bottom: 0.25rem; }
-.intro p { margin: 0; }
-.version { font-size: 0.8rem; font-weight: 400; color: var(--muted); }
-
-.usage { margin: 0 0 0.75rem; padding-left: 1.2rem; }
-.usage li + li { margin-top: 0.35rem; }
-.small { font-size: 0.9em; }
-
 kbd {
   font: 0.85em ui-monospace, SFMono-Regular, Menlo, monospace;
   padding: 0.05rem 0.3rem;
@@ -93,3 +74,4 @@ kbd {
   border-radius: 4px;
   background: var(--card);
 }
+

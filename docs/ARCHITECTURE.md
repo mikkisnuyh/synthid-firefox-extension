@@ -1,10 +1,12 @@
 # Architecture
 
-Firefox MV3 extension. The user picks an image, video or audio element. The extension fetches the original file and attaches it to synthid.com's own upload form in a new tab, where the user (signed in) sees the result.
+Firefox MV3 extension. The user drags an image onto the drop box, right-clicks an image, video or audio element, or picks one in pick mode. The extension fetches the original file and attaches it to synthid.com's own upload form in a new tab, where the user (signed in) sees the result.
 
 It never calls synthid.com's backend directly, never auto-accepts the site's Terms, never retries without a user click, and has no batch mode (synthid.com Terms: "Automate or Scrape").
 
 No build step. Plain scripts, using the `browser.*` promise API.
+
+Scripts are injected on demand, with one exception: while the `dropZone` setting is on, `resolve.js` and `dropzone.js` are registered as content scripts for all pages and frames (see Drop zone).
 
 ## Files
 
@@ -13,12 +15,14 @@ No build step. Plain scripts, using the `browser.*` promise API.
 | `src/lib/media.js` | background (classic script) and Node tests | Pure helpers: accepted types, MIME and extension checks, file names, `data:` URL → Blob. |
 | `src/lib/pending.js` | background | IndexedDB store of pending checks, keyed by the synthid.com tab id. |
 | `src/background.js` | background event page | Menus, toolbar/picker, permissions, getting the file, opening synthid.com, messaging. |
-| `src/content/resolve.js` | injected into the source page on demand | Finds the media element for a right-click target or a point; reads `blob:` URLs. |
+| `src/content/resolve.js` | injected into the source page on demand; also registered with `dropzone.js` while the drop zone is on | Finds the media element for a right-click target or a point; reads `blob:` URLs. |
+| `src/content/dropzone.js` | registered content script, all pages and frames (except synthid.com) while the `dropZone` setting is on | Drop zone: shows a drop target while an image is dragged; dropping on it starts a check. |
 | `src/content/picker.js` | injected on demand | Pick mode: hover to highlight media, click to choose, Esc to cancel. |
 | `src/content/banner.js` | synthid.com content script; also injected into source pages for notices | Shadow-DOM banner UI. |
 | `src/content/synthid.js` | synthid.com content script | Attaches the pending file to the site's file input (paste fallback); handles the Terms and sign-in dialogs. |
-| `src/options/options.*` | options page | Settings; shows whether website access is on and offers to restore it if it was revoked. |
-| `src/popup/popup.*` | toolbar popup | Menu: "Pick media on this page", plus links to synthid.com and the settings. |
+| `src/popup/popup.html`, `popup.js`, `popup.css` | toolbar popup | Main view: lists the ways to check (Drag, naming the current corner or saying drag and drop is off; Right-click; Pick, with the "Pick media on this page" button), plus links to synthid.com and Settings. `popup.js` also switches between the main and settings views (Settings link, Back button, Esc). |
+| `src/popup/settings.js` | toolbar popup | Settings view, kept minimal: one row each for the drop zone (on/off), its corner (hidden while off) and switching to the synthid.com tab; one row per keyboard shortcut (click the keys to record a new one, ↺ resets and × removes it, through `commands.update`/`reset`); and, only while website or synthid.com access is missing, a line saying so with an "Allow access" button. Turning access off is Firefox's own control. |
+| `src/popup/base.css` | toolbar popup | Base styles shared by both views. |
 
 ## Shared globals (classic scripts, no modules)
 
@@ -73,6 +77,9 @@ Defines `globalThis.SynthIDPicker`.
 - `SynthIDPicker.start()`. Shows a highlight outline over the media under the cursor, using `SynthIDResolve.fromPoint`, plus a small hint pill: "Click media to check with SynthID · Esc to cancel". On click (capture phase, with `preventDefault` and `stopPropagation`), it resolves and sends `{type: "synthid:picked", media}` with `browser.runtime.sendMessage`, or `{type: "synthid:picked", media: null}` if nothing was found. Then it stops. Esc stops it without sending.
 - It is idempotent: if it's already running, `start()` is a no-op.
 
+### `src/content/dropzone.js`
+Defines `globalThis.SynthIDDropZone = { hide }`. Idempotent: it does nothing if `hide` already exists as a function. It only adds listeners; see Drop zone below.
+
 ## Messages (`browser.runtime.sendMessage`; the background reads `sender.tab.id`)
 
 | From → to | Message | Reply |
@@ -81,11 +88,24 @@ Defines `globalThis.SynthIDPicker`.
 | synthid.js → bg | `{type:"synthid:attached", signInRequired:boolean}` | `{ok:true}`. The bg sets `attachedAt` and `signInSeen\|=signInRequired`, and sets `autoAttach = signInRequired` (re-attach automatically only after a sign-in redirect). |
 | synthid.js → bg | `{type:"synthid:clear"}` | `{ok:true}` (removes the record) |
 | picker.js → bg | `{type:"synthid:picked", media}` | none |
+| dropzone.js → bg | `{type:"synthid:dropped", media}` | none. Handled like `synthid:picked`, with `sender.frameId` as the source frame. |
+| popup → bg | `{type:"synthid:syncDropZone"}` | `{ok:boolean}`. Accepted only from the popup page (the toolbar menu's settings view); re-runs `syncDropZone()` after the setting changes. |
 | popup → bg | `{type:"synthid:startPicker", tabId}` | `{ok:boolean}`. Accepted only from the popup page; `ok:false` when the page blocks injection. |
 
 Firefox runtime messaging uses structured clone, so `Blob` crosses the boundary intact.
 
 ## Flows
+
+### Drop zone
+- **Registration.** `syncDropZone()` in the background registers the content script `drop-zone` with `scripting.registerContentScripts` (`resolve.js` + `dropzone.js`, `<all_urls>`, excluding `https://synthid.com/*`, `allFrames`, `document_start`) while `settings.dropZone` is not `false` (default `true`, in `storage.sync`). It unregisters it when the setting is off. It runs at startup, on `storage.onChanged` for `dropZone`, on `synthid:syncDropZone` from the toolbar menu (in case `storage.onChanged` doesn't wake a suspended event page), and on `runtime.onInstalled` (which also refreshes the definition with `updateContentScripts`). Calls are chained so overlapping runs can't register the id twice. The setting only affects pages opened or reloaded afterwards.
+- **Drag detection.** Listeners are on `window`, capture phase, added at `document_start`, and ignore `!isTrusted` events. On `dragstart`, the target (`composedPath()[0]`, so images in the page's open shadow roots count) is checked: an `img`, `picture` or SVG `image` goes through `SynthIDResolve.fromElement`. For anything else (for example an image inside a link, which drags as the link): only if `dataTransfer.types` has `application/x-moz-nativeimage`, the media under the pointer (`SynthIDResolve.fromPoint(clientX, clientY)`). Only `kind: "image"` with an `http(s):`, `data:` or `blob:` URL counts. Text and plain links don't show the zone.
+- **Showing.** After the check, `setTimeout(0)` waits for the page's own `dragstart` handlers; if `e.defaultPrevented`, the drag was cancelled, no `dragend` would follow, and the zone is not shown.
+- **Where.** In the top frame, the chosen corner of the viewport. The corner is `dropZoneCorner` in `storage.sync` (`top-right`, `bottom-right`, `top-left` or `bottom-left`; default `top-right`). It is read lazily on the first drag and read again after `storage.onChanged` reports a change. In a frame, the chosen corner of the part of it that is on screen: frames sized to their content (embeds, webmail) can reach far above or below the visible page. That part is measured with an `IntersectionObserver` on a temporary fixed, invisible probe (`[data-synthid-picker="probe"]`). No zone if the visible area is smaller than 240x160. If the drag started where the zone would appear, it goes in the other corner on the same side instead (top-right → bottom-right, bottom-left → top-left, and likewise for the others).
+- **Why in the source frame.** Firefox doesn't let a cross-origin frame drop into its parent, so a zone in the top frame couldn't receive a drag that started in an iframe. The zone is shown in the frame where the drag started: the top frame for ordinary pages.
+- **The zone.** A plain `div` host (pages can't define it as a custom element and reach the shadow root) with a closed shadow root and `data-synthid-picker`, so `resolve.js` never takes it for page media. The element inside the shadow root is the popover (`popover="manual"`, `showPopover()`): the top layer keeps it above page dialogs, and page styles such as a bare `::backdrop` rule can't reach it. Everything outside an open modal dialog is inert, so while one is open the host goes inside it. Half transparent with a dashed border.
+- **Arming.** A drop counts only after the pointer was over something other than the zone while it was shown, so releasing a drag in place can't start a check. Once armed, `dragenter`/`dragover` on the zone call `preventDefault` and `stopImmediatePropagation` and set `dropEffect` within what the source's `effectAllowed` permits.
+- **Drop.** A drop on the zone is stopped (the page never sees it) and the zone is hidden. If armed, `{type:"synthid:dropped", media}` is sent. The background runs `acquire` with `sender.tab` and `sender.frameId`, like `synthid:picked`. A drop anywhere else just hides the zone. Nothing is read or sent before the drop.
+- **Hiding.** On `dragend`, `drop`, `pagehide`, and when a new `dragstart` begins. `dragend` goes to the drag source, so a page that removes the source from the document mid-drag hides it from us. As a fallback, a trusted `mouseup`, or `mousemove` with `buttons === 0`, while the zone is shown hides it, since no mouse events reach the page during a drag.
 
 ### Context menu
 Items are created in `runtime.onInstalled` (and `runtime.onStartup`, after `menus.removeAll()`, for robustness):
@@ -102,15 +122,15 @@ Items are created in `runtime.onInstalled` (and `runtime.onStartup`, after `menu
 2. **find-media**: `scripting.executeScript({target:{tabId, frameIds:[info.frameId]}, files:["src/content/resolve.js"]})`, then a `func` that does `SynthIDResolve.fromElement(browser.menus.getTargetElement(id))` and returns the media. Continue with **acquire**.
 
 ### Toolbar menu or shortcut
-The toolbar button opens the popup (`action.default_popup`), so `action.onClicked` never fires. Opening the popup is a toolbar click, which grants `activeTab`. The popup's "Pick media on this page" button sends `synthid:startPicker` with the active tab's id. The `start-picker` command (Alt+Shift+S) skips the menu. Both call `startPicker(tabId)`, which injects `resolve.js` and `picker.js` into the top frame and calls `SynthIDPicker.start()`. `_execute_action` (open the menu) has no default key. On `synthid:picked`, continue with **acquire** using `sender.tab`.
+The toolbar button opens the popup (`action.default_popup`), so `action.onClicked` never fires. Opening the popup is a toolbar click, which grants `activeTab`. The popup lists the ways to check, in this order: Drag (naming the current `dropZoneCorner`, or saying drag and drop is off), Right-click, Pick. Its Settings link turns the menu into the settings view (Back returns; Esc also goes back unless a shortcut is being recorded). The popup's "Pick media on this page" button sends `synthid:startPicker` with the active tab's id. The `start-picker` command (Alt+Shift+S) skips the menu. Both call `startPicker(tabId)`, which injects `resolve.js` and `picker.js` into the top frame and calls `SynthIDPicker.start()`. `_execute_action` (open the menu) has no default key. On `synthid:picked`, continue with **acquire** using `sender.tab`.
 
 ### acquire(media, sourceTab, frameId)
-- **http(s):** `fetch(url, {credentials:"include"})` from the background. If website access is off (the user declined or revoked it), fetch inside the source frame or top frame when the media is same-origin with it (`activeTab` covers that). Otherwise show a notice that points to the settings.
+- **http(s):** `fetch(url, {credentials:"include"})` from the background. If website access is off (the user declined or revoked it), fetch inside the source frame or top frame when the media is same-origin with it (`activeTab` covers that). Otherwise show a notice: "Turn it back on in its settings: click the SynthID Check button in the toolbar, then Settings." It has no button, because Firefox only opens an extension's toolbar menu from a user action.
 - **`data:`:** `SynthIDMedia.dataUrlToBlob`.
 - **`blob:`:** run `SynthIDResolve.readBlobUrl(url)` in the source frame. If it fails, or `isMediaSource` is set, notify: "This is a streaming video and can't be captured. Download the file and upload it on synthid.com yourself."
 - **Validate:** check `isAcceptedType` (else notify which types are accepted) and size (≤ `MAX_BYTES`).
 - **Open synthid.com:** `tabs.create({url:"https://synthid.com/", index: sourceTab.index + 1, openerTabId: sourceTab.id, active: settings.openInForeground})`. Then `SynthIDPending.put({tabId: newTab.id, ...})`.
-- **Errors:** notify in the source tab through the banner, injected with `scripting.executeScript` (`activeTab` allows this). If injection fails (for example on about: pages), fall back to `console.warn`.
+- **Errors:** notify in the source tab through the banner, injected with `scripting.executeScript` (`activeTab` allows this). If injection fails (for example on about: pages), fall back to `console.warn`. Notices about revoked website or synthid.com access use the same text and have no button.
 
 ### synthid.com page (`synthid.js`)
 Declared with `run_at: document_start`, so the file transfer from the background overlaps with the page loading. Timings were measured on the live site: the upload field appears about 0.26 s after load for returning visitors; on a first visit, the Terms dialog renders just before the field; the sign-in dialog appears about 10 ms after a file is added.
@@ -141,5 +161,6 @@ Declared with `run_at: document_start`, so the file transfer from the background
 - **Pick mode.** It ignores synthetic (`!isTrusted`) events, so a page can't choose the media for the user.
 - **Overlays.** `fromElement` hit-tests the centre of the part of the element that is on screen.
 - **Downloads.** The size cap is enforced while streaming the download. After a network error , there is one fallback to an in-page fetch for the page's own origin, then a notice.
-- **Permissions.** The options page doesn't list `https://synthid.com/*` as removable. If that access has been revoked anyway, the background shows a notice instead of opening a tab where nothing can be attached.
+- **Permissions.** The settings view doesn't offer to remove `https://synthid.com/*`. If that access has been revoked anyway, the background shows the notice above instead of opening a tab where nothing can be attached.
 - **Re-injection guards.** They check for function types (`typeof X?.fn === "function"`), so named page elements (window named properties) can't spoof them.
+- **Drop zone.** It ignores synthetic events, so a page can't show the zone or trigger a drop. Its listeners run in the capture phase on `window` from `document_start`, ahead of the page's, so a page can't swallow drops meant for the zone. The script sends nothing until a trusted drop lands on the zone, and the guard against double injection checks `typeof SynthIDDropZone?.hide === "function"`.

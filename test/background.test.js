@@ -34,6 +34,7 @@ const ALL_SITES_REQUEST = { origins: [ALL_URLS] };
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8, 250, 251]);
 const CDN_PNG = "https://cdn.example.com/img/cat.png";
 const PAGE_URL = "https://example.com/page";
+const SETTINGS_HINT = "Turn it back on in its settings: click the SynthID Check button in the toolbar, then Settings.";
 
 // ---------------------------------------------------------------------------
 // Mock browser
@@ -118,8 +119,14 @@ function makeEnv(opts = {}) {
     permissionsOnAdded: makeEvent(),
     permissionsOnRemoved: makeEvent(),
     tabsOnRemoved: makeEvent(),
+    storageOnChanged: makeEvent(),
   };
   env.events = events;
+  // In-memory scripting.registerContentScripts registry (id -> definition) plus a call log.
+  env.registeredScripts = new Map();
+  env.scriptingLog = [];
+  // Optional hook: delay getRegisteredContentScripts' answer (to force overlapping syncs).
+  env.registryDelay = null;
 
   env.addTab = (tab) => {
     const full = { id: 1, windowId: 1, index: 0, url: PAGE_URL, incognito: false, active: true, ...tab };
@@ -148,6 +155,9 @@ function makeEnv(opts = {}) {
       onInstalled: events.onInstalled,
       onStartup: events.onStartup,
       onMessage: events.onMessage,
+      openOptionsPage: async () => {
+        calls.openOptionsPage = (calls.openOptionsPage || 0) + 1;
+      },
     },
     menus: {
       removeAll: async () => {
@@ -182,6 +192,33 @@ function makeEnv(opts = {}) {
       onRemoved: events.permissionsOnRemoved,
     },
     scripting: {
+      getRegisteredContentScripts: async (filter = {}) => {
+        env.scriptingLog.push("get");
+        const found = [...env.registeredScripts.values()].filter((s) => !filter.ids || filter.ids.includes(s.id));
+        if (env.registryDelay) await env.registryDelay();
+        return structuredClone(found);
+      },
+      registerContentScripts: async (scripts) => {
+        env.scriptingLog.push("register");
+        for (const s of scripts) {
+          if (env.registeredScripts.has(s.id)) throw new Error(`Content script with id "${s.id}" is already registered`);
+        }
+        for (const s of scripts) env.registeredScripts.set(s.id, structuredClone(s));
+      },
+      unregisterContentScripts: async (filter = {}) => {
+        env.scriptingLog.push("unregister");
+        for (const id of filter.ids || [...env.registeredScripts.keys()]) {
+          if (!env.registeredScripts.has(id)) throw new Error(`Content script with id "${id}" does not exist`);
+          env.registeredScripts.delete(id);
+        }
+      },
+      updateContentScripts: async (scripts) => {
+        env.scriptingLog.push("update");
+        for (const s of scripts) {
+          if (!env.registeredScripts.has(s.id)) throw new Error(`Content script with id "${s.id}" does not exist`);
+        }
+        for (const s of scripts) env.registeredScripts.set(s.id, { ...env.registeredScripts.get(s.id), ...structuredClone(s) });
+      },
       executeScript: async (details) => {
         calls.executeScript.push(details);
         return env.scriptHandler(details);
@@ -220,6 +257,7 @@ function makeEnv(opts = {}) {
       sync: {
         get: async (defaults) => ({ ...defaults, ...env.syncStorage }),
       },
+      onChanged: events.storageOnChanged,
     },
   };
   env.browser = browser;
@@ -541,9 +579,9 @@ test("access revoked and declined: a cross-origin image gets the access notice, 
   assert.equal(notice.args[0].state, "warn");
   assert.equal(
     notice.args[0].message,
-    "SynthID Check needs access to websites to download this file. " +
-      "Allow it in the extension's settings (about:addons → SynthID Check → Permissions).",
+    `SynthID Check needs access to websites to download this file. ${SETTINGS_HINT}`,
   );
+  assert.deepEqual(notice.args[0].actions, []);
   assert.equal(env.calls.fetch.length, 0);
   assert.equal(env.calls.tabsCreate.length, 0, "no synthid.com tab and no grant page");
   assert.equal(env.calls.permissionsRequest.length, 1, "no second request outside the click");
@@ -737,7 +775,13 @@ test("without synthid.com host access nothing is opened and the user is told", a
   const tab = env.addTab(sourceTab());
   env.click(imageClick("https://example.com/a.png"), tab);
   await waitFor(() => bannerCalls(env, 5).length === 1, "access notice");
-  assert.match(bannerCalls(env, 5)[0].args[0].message, /needs access to synthid\.com/);
+  const notice = bannerCalls(env, 5)[0].args[0];
+  assert.equal(
+    notice.message,
+    `SynthID Check needs access to synthid.com to attach the file. ${SETTINGS_HINT}`,
+  );
+  assert.equal(notice.state, "warn");
+  assert.deepEqual(notice.actions, []);
   assert.equal(env.calls.tabsCreate.length, 0);
 });
 
@@ -1304,4 +1348,257 @@ test("two overlapping checks: each synthid tab can read its own file even if the
   const replyA = await earlyA;
   assert.equal(replyA.found, true, "the first tab's file must not be reported missing");
   assert.deepEqual(await bytesOf(replyA.blob), Array.from(PNG));
+});
+
+// ---------------------------------------------------------------------------
+// Drop zone
+
+const DROP_ZONE_DEFINITION = {
+  id: "drop-zone",
+  matches: ["<all_urls>"],
+  excludeMatches: [SYNTHID_PATTERN],
+  js: ["src/content/resolve.js", "src/content/dropzone.js"],
+  allFrames: true,
+  runAt: "document_start",
+};
+
+test("drop zone: registered on load with the exact definition by default", async () => {
+  const env = await loadBackground();
+  await waitFor(() => env.registeredScripts.size === 1, "registration");
+  assert.deepEqual([...env.registeredScripts.values()], [DROP_ZONE_DEFINITION]);
+  assert.deepEqual(env.scriptingLog.filter((x) => x !== "get"), ["register"]);
+});
+
+test("drop zone: the registered files exist", async () => {
+  const env = await loadBackground();
+  await waitFor(() => env.registeredScripts.size === 1, "registration");
+  for (const f of env.registeredScripts.get("drop-zone").js) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
+});
+
+test("drop zone: not registered when the setting is off", async () => {
+  const env = await loadBackground({ syncStorage: { dropZone: false } });
+  await tick();
+  assert.equal(env.registeredScripts.size, 0);
+  assert.deepEqual(env.scriptingLog.filter((x) => x !== "get"), []);
+});
+
+test("drop zone: storage changes register and unregister it", async () => {
+  const env = await loadBackground({ syncStorage: { dropZone: false } });
+  assert.equal(env.registeredScripts.size, 0);
+
+  env.syncStorage.dropZone = true;
+  env.events.storageOnChanged.fire({ dropZone: { oldValue: false, newValue: true } }, "sync");
+  await waitFor(() => env.registeredScripts.size === 1, "registration after enabling");
+  assert.deepEqual([...env.registeredScripts.values()], [DROP_ZONE_DEFINITION]);
+
+  env.syncStorage.dropZone = false;
+  env.events.storageOnChanged.fire({ dropZone: { oldValue: true, newValue: false } }, "sync");
+  await waitFor(() => env.registeredScripts.size === 0, "unregistration after disabling");
+  assert.equal(env.calls.consoleWarn.length, 0);
+});
+
+test("drop zone: unrelated storage changes and other areas are ignored", async () => {
+  const env = await loadBackground();
+  await waitFor(() => env.registeredScripts.size === 1, "registration");
+  env.syncStorage.dropZone = false;
+  env.events.storageOnChanged.fire({ openInForeground: { newValue: false } }, "sync");
+  env.events.storageOnChanged.fire({ dropZone: { newValue: false } }, "local");
+  await tick();
+  await tick();
+  assert.equal(env.registeredScripts.size, 1);
+});
+
+test("drop zone: enabling when already registered does not register twice or warn", async () => {
+  const env = await loadBackground();
+  await waitFor(() => env.registeredScripts.size === 1, "registration");
+  env.events.storageOnChanged.fire({ dropZone: { oldValue: true, newValue: true } }, "sync");
+  await tick();
+  await tick();
+  assert.equal(env.scriptingLog.filter((x) => x === "register").length, 1);
+  assert.equal(env.calls.consoleWarn.length, 0);
+});
+
+test("drop zone: onInstalled refreshes an already registered script with updateContentScripts", async () => {
+  const env = await loadBackground();
+  await waitFor(() => env.registeredScripts.size === 1, "registration");
+  // Simulate a stale definition left over from the previous version.
+  env.registeredScripts.set("drop-zone", { ...DROP_ZONE_DEFINITION, js: ["src/content/old.js"] });
+  env.events.onInstalled.fire({ reason: "update" });
+  await waitFor(() => env.scriptingLog.includes("update"), "update");
+  await tick();
+  assert.deepEqual([...env.registeredScripts.values()], [DROP_ZONE_DEFINITION]);
+  assert.equal(env.scriptingLog.filter((x) => x === "register").length, 1);
+});
+
+test("drop zone: onInstalled registers it when not yet registered, and leaves it off when disabled", async () => {
+  const env = await loadBackground({ syncStorage: { dropZone: false } });
+  env.events.onInstalled.fire({ reason: "install" });
+  await tick();
+  await tick();
+  assert.equal(env.registeredScripts.size, 0);
+
+  env.syncStorage.dropZone = true;
+  env.events.onInstalled.fire({ reason: "update" });
+  await waitFor(() => env.registeredScripts.size === 1, "registration");
+  assert.equal(env.scriptingLog.includes("update"), false);
+});
+
+test("drop zone: overlapping syncs register it only once", async () => {
+  const env = makeEnv();
+  let release;
+  const gate = new Promise((r) => (release = r));
+  env.registryDelay = () => gate;
+  for (const rel of SCRIPTS) {
+    const file = path.join(ROOT, rel);
+    new vm.Script(fs.readFileSync(file, "utf8"), { filename: file }).runInContext(env.context);
+  }
+  // The load-time sync is stuck in its registry lookup; pile more on top.
+  env.events.onInstalled.fire({ reason: "install" });
+  env.events.storageOnChanged.fire({ dropZone: { newValue: true } }, "sync");
+  env.events.storageOnChanged.fire({ dropZone: { newValue: true } }, "sync");
+  await tick();
+  assert.equal(env.scriptingLog.filter((x) => x === "get").length, 1, "later syncs wait for the first");
+  release();
+  await waitFor(() => env.registeredScripts.size === 1, "registration");
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(env.scriptingLog.filter((x) => x === "register").length, 1);
+  assert.equal(env.registeredScripts.size, 1);
+  assert.equal(env.calls.consoleWarn.length, 0, JSON.stringify(env.calls.consoleWarn));
+});
+
+test("drop zone: a failing registration is logged and later syncs still work", async () => {
+  const env = await loadBackground({ syncStorage: { dropZone: false } });
+  const original = env.browser.scripting.registerContentScripts;
+  env.browser.scripting.registerContentScripts = async () => {
+    throw new Error("boom");
+  };
+  env.syncStorage.dropZone = true;
+  env.events.storageOnChanged.fire({ dropZone: { newValue: true } }, "sync");
+  await waitFor(() => env.calls.consoleWarn.length === 1, "warning");
+  env.browser.scripting.registerContentScripts = original;
+  env.events.storageOnChanged.fire({ dropZone: { newValue: true } }, "sync");
+  await waitFor(() => env.registeredScripts.size === 1, "registration");
+});
+
+test("synthid:dropped opens synthid.com with the dropped file", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  env.fetchHandler = async () => pngResponse();
+  const media = { kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false };
+  assert.equal(await env.send({ type: "synthid:dropped", media }, { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 }), undefined);
+  await waitFor(() => env.synthidTabs().length === 1, "synthid tab");
+  assert.equal(env.calls.fetch[0].url, CDN_PNG);
+  const reply = await getPending(env, env.synthidTabs()[0].id);
+  assert.equal(reply.found, true);
+  assert.equal(reply.sourceUrl, CDN_PNG);
+  assert.equal(reply.name, "cat.png");
+  assert.deepEqual(await bytesOf(reply.blob), Array.from(PNG));
+});
+
+test("synthid:dropped reads a blob: image in the frame that sent it", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  env.scriptHandler = (d) => {
+    if (d.files) return [{}];
+    return [{ result: { ok: true, blob: new Blob([PNG], { type: "image/png" }), type: "image/png" } }];
+  };
+  const media = { kind: "image", url: "blob:https://ads.example.net/abc", isBlob: true, isMediaSource: false };
+  const frameUrl = "https://ads.example.net/frame";
+  await env.send({ type: "synthid:dropped", media }, { id: EXT_ID, url: frameUrl, tab, frameId: 7 });
+  await waitFor(() => env.synthidTabs().length === 1, "synthid tab");
+  const read = env.calls.executeScript.find((d) => d.func);
+  assert.deepEqual(read.target, { tabId: 5, frameIds: [7] });
+  assert.deepEqual(read.args, ["blob:https://ads.example.net/abc"]);
+  assert.equal(env.calls.fetch.length, 0);
+  const reply = await getPending(env, env.synthidTabs()[0].id);
+  assert.deepEqual(await bytesOf(reply.blob), Array.from(PNG));
+});
+
+test("synthid:dropped without a frameId defaults to the top frame", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  env.scriptHandler = (d) => {
+    if (d.files) return [{}];
+    return [{ result: { ok: true, blob: new Blob([PNG], { type: "image/png" }), type: "image/png" } }];
+  };
+  const media = { kind: "image", url: "blob:https://example.com/abc", isBlob: true, isMediaSource: false };
+  await env.send({ type: "synthid:dropped", media }, { id: EXT_ID, url: PAGE_URL, tab });
+  await waitFor(() => env.synthidTabs().length === 1, "synthid tab");
+  assert.deepEqual(env.calls.executeScript.find((d) => d.func).target, { tabId: 5, frameIds: [0] });
+});
+
+test("synthid:dropped with no media sends no notice and opens nothing", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  for (const media of [null, undefined, {}, { url: "" }, { url: 5 }]) {
+    await env.send({ type: "synthid:dropped", media }, { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 });
+  }
+  await env.send({ type: "synthid:dropped", media: { kind: "image", url: CDN_PNG } }, { id: EXT_ID, url: PAGE_URL, frameId: 0 });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(bannerCalls(env, 5).length, 0);
+  assert.equal(env.calls.executeScript.length, 0);
+  assert.equal(env.calls.tabsCreate.length, 0);
+  assert.equal(env.calls.fetch.length, 0);
+});
+
+const OPTIONS_URL = EXT_BASE + "src/options/options.html";
+
+test("synthid:syncDropZone from the popup re-syncs the registration and replies ok", async () => {
+  const env = await loadBackground({ syncStorage: { dropZone: false } });
+  assert.equal(env.registeredScripts.size, 0);
+  env.syncStorage.dropZone = true;
+  const reply = await env.send({ type: "synthid:syncDropZone" }, { id: EXT_ID, url: POPUP_URL + "?x=1" });
+  assert.deepEqual(reply, { ok: true });
+  assert.equal(env.registeredScripts.size, 1, "registered by the time the reply arrives");
+
+  env.syncStorage.dropZone = false;
+  assert.deepEqual(await env.send({ type: "synthid:syncDropZone" }, { id: EXT_ID, url: POPUP_URL }), { ok: true });
+  assert.equal(env.registeredScripts.size, 0);
+});
+
+test("synthid:syncDropZone from any other sender is refused and changes nothing", async () => {
+  const env = await loadBackground({ syncStorage: { dropZone: false } });
+  env.syncStorage.dropZone = true;
+  const tab = env.addTab(sourceTab());
+  for (const sender of [
+    { id: EXT_ID, url: OPTIONS_URL },
+    { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 },
+    { id: EXT_ID, url: "https://evil.example/src/popup/popup.html" },
+    { id: EXT_ID, url: "https://evil.example/" + "src/options/options.html" },
+    { id: EXT_ID },
+  ]) {
+    assert.deepEqual(await env.send({ type: "synthid:syncDropZone" }, sender), { ok: false });
+  }
+  await tick();
+  assert.equal(env.registeredScripts.size, 0);
+  assert.deepEqual(env.scriptingLog.filter((x) => x !== "get"), []);
+});
+
+test("other notices carry no actions", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  env.fetchHandler = async () => new Response("x", { status: 500 });
+  env.click(imageClick(CDN_PNG), tab);
+  await waitFor(() => bannerCalls(env, 5).length === 1, "notice");
+  assert.deepEqual(bannerCalls(env, 5)[0].args[0].actions, []);
+});
+
+test("synthid:openSettings is gone: unknown message, nothing happens", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  assert.equal(await env.send({ type: "synthid:openSettings" }, { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 }), undefined);
+  assert.equal(env.calls.openOptionsPage, undefined);
+});
+
+test("manifest has no options page and every file it references exists", () => {
+  assert.equal("options_ui" in MANIFEST, false);
+  const files = [
+    ...MANIFEST.background.scripts,
+    ...MANIFEST.content_scripts.flatMap((c) => [...(c.js || []), ...(c.css || [])]),
+    MANIFEST.action.default_popup,
+    MANIFEST.action.default_icon,
+    ...Object.values(MANIFEST.icons),
+  ];
+  assert.ok(files.length >= 8);
+  for (const f of files) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
 });
