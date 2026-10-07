@@ -244,19 +244,28 @@ function toBlob(value, type) {
 // ---------------------------------------------------------------------------
 // Menus
 
+// onInstalled and onStartup can both fire (e.g. the first start after an update),
+// so rebuilds run one at a time; interleaved removeAll/create calls would
+// otherwise create duplicate ids.
+let menusBuild = Promise.resolve();
+
 function createMenus() {
-  return browser.menus.removeAll().then(() => {
-    browser.menus.create({
-      id: "check-media",
-      title: "Check with SynthID",
-      contexts: ["image", "video", "audio"],
-    });
-    browser.menus.create({
-      id: "find-media",
-      title: "Find media here and check with SynthID",
-      contexts: ["page", "frame", "link"],
-    });
-  });
+  menusBuild = menusBuild
+    .then(() => browser.menus.removeAll())
+    .then(() => {
+      browser.menus.create({
+        id: "check-media",
+        title: "Check with SynthID",
+        contexts: ["image", "video", "audio"],
+      });
+      browser.menus.create({
+        id: "find-media",
+        title: "Find media here and check with SynthID",
+        contexts: ["page", "frame", "link"],
+      });
+    })
+    .catch((e) => console.warn("SynthID Check: creating menus failed", e));
+  return menusBuild;
 }
 
 browser.runtime.onInstalled.addListener(() => {
@@ -621,7 +630,10 @@ function openSynthId(file, sourceUrl, sourceTab) {
       Boolean(sourceTab.incognito || newTab.incognito),
     );
   })();
-  openInFlight = run.catch(() => {});
+  // Chain rather than replace: with overlapping checks, a tab must wait for its
+  // own put() too, not just the most recent one.
+  const settled = run.catch(() => {});
+  openInFlight = Promise.all([openInFlight, settled]).then(() => {});
   return run;
 }
 

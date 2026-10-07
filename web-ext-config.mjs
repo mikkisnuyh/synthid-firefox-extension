@@ -10,5 +10,7 @@ export default {
     "PRIVACY.md",
     "CONTRIBUTING.md",
     "docs",
+    "test-results",
+    "web-ext-artifacts",
   ],
 };
