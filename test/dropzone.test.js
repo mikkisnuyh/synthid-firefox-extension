@@ -86,6 +86,11 @@ function fire(w, target, type, opts = {}) {
   return e;
 }
 
+// jsdom has no layout: give an element a bounding rect.
+function setRect(el, left, top, right, bottom) {
+  el.getBoundingClientRect = () => ({ left, top, right, bottom, width: right - left, height: bottom - top, x: left, y: top });
+}
+
 const tick = () => new Promise((r) => setTimeout(r, 5));
 const hostEl = (w) => w.document.querySelector(HOST);
 
@@ -651,12 +656,60 @@ test("a text link containing an image, dragged by its text, shows nothing", asyn
   assert.equal(hostEl(w), null);
 });
 
-test("a link with the image under the point shows the zone without the native type", async () => {
+test("a link whose image rect contains the point shows the zone without the native type", async () => {
   const w = setup('<a id="a" href="https://example.com/x">Some text <img id="img" src="https://example.com/cat.png"></a>');
-  w.document.elementsFromPoint = () => [w.document.getElementById("img"), w.document.getElementById("a"), w.document.body];
+  setRect(w.document.getElementById("img"), 0, 0, 50, 50);
   fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
   await tick();
   assert.ok(hostEl(w));
+});
+
+test("a span inside the link as dragstart target still finds the link's image by rect", async () => {
+  const w = setup('<a id="a" href="https://example.com/x"><span id="s">words</span> <img id="img" src="https://example.com/cat.png"></a>');
+  setRect(w.document.getElementById("img"), 0, 0, 50, 50);
+  fire(w, w.document.getElementById("s"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.ok(hostEl(w));
+});
+
+test("a link whose img has pointer-events:none and sr-only text counts when the point is inside the img rect", async () => {
+  const w = setup(
+    '<a id="a" href="https://example.com/x"><span style="position:absolute;clip:rect(0,0,0,0)">Profile</span>' +
+      '<img id="img" style="pointer-events:none" src="https://example.com/cat.png"></a>',
+  );
+  setRect(w.document.getElementById("img"), 10, 10, 60, 60);
+  w.document.elementsFromPoint = () => [w.document.getElementById("a")];
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 20, clientY: 20 });
+  await tick();
+  assert.ok(hostEl(w));
+  arm(w);
+  fire(w, hostEl(w), "drop");
+  assert.equal(messages[0].media.url, "https://example.com/cat.png");
+});
+
+test("a draggable non-link card containing an image under the point shows nothing", async () => {
+  const w = setup('<div id="card" draggable="true"><img id="img" src="https://example.com/cat.png"></div>');
+  setRect(w.document.getElementById("img"), 0, 0, 50, 50);
+  w.document.elementsFromPoint = () => [w.document.getElementById("img"), w.document.getElementById("card")];
+  fire(w, w.document.getElementById("card"), "dragstart", { types: ["text/plain"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.equal(hostEl(w), null);
+});
+
+test("a link with text and an image whose rect misses the point, no native type, shows nothing", async () => {
+  const w = setup('<a id="a" href="https://example.com/x">words <img id="img" src="https://example.com/cat.png"></a>');
+  setRect(w.document.getElementById("img"), 100, 100, 150, 150);
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.equal(hostEl(w), null);
+});
+
+test("the image rect must have a positive size", async () => {
+  const w = setup('<a id="a" href="https://example.com/x">words <img id="img" src="https://example.com/cat.png"></a>');
+  setRect(w.document.getElementById("img"), 5, 5, 5, 5);
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.equal(hostEl(w), null);
 });
 
 test("an image under the point but outside the dragged link shows nothing without the native type", async () => {
@@ -712,32 +765,36 @@ test("a CSS background image under the point shows nothing without the native ty
 
 test("with clientX/clientY both 0, the last trusted mousedown point is used", async () => {
   const w = setup('<a id="a" href="https://example.com/x">text <img id="img" src="https://example.com/cat.png"></a>');
-  const asked = [];
-  w.document.elementsFromPoint = (x, y) => {
-    asked.push([x, y]);
-    return [w.document.getElementById("img"), w.document.getElementById("a")];
-  };
-  fire(w, w.document.body, "mousedown", { buttons: 1, clientX: 70, clientY: 80, isTrusted: false });
-  fire(w, w.document.body, "mousedown", { buttons: 1, clientX: 20, clientY: 30 });
-  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 0, clientY: 0 });
+  setRect(w.document.getElementById("img"), 15, 25, 60, 60);
+  const drag = (x, y) => fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: x, clientY: y });
+  // An untrusted mousedown inside the image is ignored.
+  fire(w, w.document.body, "mousedown", { buttons: 1, clientX: 20, clientY: 30, isTrusted: false });
+  drag(0, 0);
   await tick();
-  assert.ok(hostEl(w));
-  assert.deepEqual(asked[0], [20, 30]);
+  assert.equal(hostEl(w), null, "no usable point");
+
+  fire(w, w.document.body, "mousedown", { buttons: 1, clientX: 20, clientY: 30 });
+  drag(0, 0);
+  await tick();
+  assert.ok(hostEl(w), "mousedown point inside the image");
 
   // Non-zero coordinates win over the mousedown point.
   w.SynthIDDropZone.hide();
-  asked.length = 0;
-  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 0, clientY: 9 });
+  drag(0, 9);
   await tick();
-  assert.deepEqual(asked[0], [0, 9]);
+  assert.equal(hostEl(w), null);
 });
 
 test("with clientX/clientY 0 and no mousedown, the point is (0, 0)", async () => {
   const w = setup('<a id="a" href="https://example.com/x">text <img id="img" src="https://example.com/cat.png"></a>');
-  const asked = [];
-  w.document.elementsFromPoint = (x, y) => (asked.push([x, y]), []);
+  const img = w.document.getElementById("img");
+  setRect(img, 0, 0, 40, 40);
   fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 0, clientY: 0 });
   await tick();
-  assert.deepEqual(asked[0], [0, 0]);
+  assert.ok(hostEl(w), "(0, 0) is inside the rect");
+  w.SynthIDDropZone.hide();
+  setRect(img, 1, 1, 40, 40);
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 0, clientY: 0 });
+  await tick();
   assert.equal(hostEl(w), null);
 });
