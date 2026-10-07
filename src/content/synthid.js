@@ -397,8 +397,20 @@
   }
 
   // After attaching: follow what the site does with the file, by watching the page.
-  async function watchOutcome(signedIn) {
-    const step = () => (signInShown() ? "signin" : pageOutcome());
+  // `before` is what the page showed just before attaching (e.g. the error card from the last
+  // attempt). It doesn't count until the page has moved on from it, otherwise a retry would
+  // report the old error before the site has even reacted.
+  async function watchOutcome(signedIn, before) {
+    let movedOn = before === null;
+    const step = () => {
+      if (signInShown()) return "signin";
+      const o = pageOutcome();
+      if (!movedOn) {
+        if (o === before) return null;
+        movedOn = true;
+      }
+      return o;
+    };
     const first = await waitFor(step, signedIn ? OUTCOME_MAX_MS : SIGN_IN_PROMPT_MAX_MS);
     if (dismissed) return;
     send({ type: "synthid:attached", signInRequired: first === "signin" }).catch(() => {});
@@ -434,10 +446,11 @@
       if (!(await termsReady())) return;
       show({ state: "working", title: "SynthID Check", message: "Attaching your file…" });
 
+      const before = pageOutcome();
       const method = attach(fileInput() || input);
       console.debug("SynthID Check: attached via", method);
 
-      await watchOutcome(signedIn);
+      await watchOutcome(signedIn, before);
     } catch (e) {
       if (dismissed) return;
       console.warn("SynthID Check: attach failed", e);
@@ -486,6 +499,27 @@
     }
   }
 
+  // From the detection page: go back to the upload page and wait until the old error card is
+  // gone, then attach again. Only ever runs from a click on Try again.
+  async function tryAgain() {
+    if (busy) return;
+    if (/-detection\b/.test(location.pathname)) {
+      show({ state: "working", title: "SynthID Check", message: "Going back to the upload page…" });
+      // The site's own "Back" link, else the browser's back.
+      const back = [...document.querySelectorAll("a, button, [role=button]")].find(
+        (el) => /^\W*back$/i.test((el.textContent || "").replace(/arrow_back/i, "").trim()) && isVisible(el),
+      );
+      if (back) back.click();
+      else history.back();
+      await waitFor(
+        () => !/-detection\b/.test(location.pathname) && pageOutcome() !== "error" && fileInput(),
+        FILE_INPUT_MAX_MS,
+      );
+      if (dismissed) return;
+    }
+    run();
+  }
+
   function onAction(id) {
     if (id === "dismiss") {
       dismissed = true;
@@ -494,9 +528,7 @@
     } else if (id === "retry" || id === "attach") {
       run();
     } else if (id === "tryagain") {
-      // From the detection page, go back to the upload page; run() waits for its file input.
-      if (!fileInput() && /-detection\b/.test(location.pathname)) history.back();
-      run();
+      tryAgain();
     } else if (id === "copy") {
       copyImage();
     }

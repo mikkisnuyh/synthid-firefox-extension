@@ -60,7 +60,7 @@ function clearSession(idb) {
   });
 }
 
-function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = false, siteState = true, faqText = "" } = {}) {
+function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = false, siteState = true, faqText = "", keepInput = false, backLink = false } = {}) {
   const dom = new JSDOM(`<!doctype html><body><input type="file" hidden></body>`, {
     url: "https://synthid.com/",
     runScripts: "outside-only",
@@ -140,11 +140,28 @@ function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = fal
       }
       // The window's own timer, so it can't fire after the test closed the window.
       w.setTimeout(() => {
-        w.history.pushState({}, "", "/image-detection");
-        w.document.querySelector("input[type=file]").remove();
+        if (!w.location.pathname.endsWith("-detection")) w.history.pushState({}, "", "/image-detection");
+        if (!keepInput) w.document.querySelector("input[type=file]").remove();
+        if (detection) detection.remove();
         detection = w.document.createElement("div");
         detection.textContent = "Detecting...";
         w.document.body.append(detection);
+        if (backLink) {
+          // Like the site's "← Back" link: navigates within the app, no history entry needed.
+          const link = w.document.createElement("a");
+          link.innerHTML = "<mat-icon>arrow_back</mat-icon> Back";
+          link.addEventListener("click", () => {
+            log.push("back-link");
+            w.history.replaceState({}, "", "/");
+            showUploadPage();
+          });
+          detection.after(link);
+          const prevRemove = detection.remove.bind(detection);
+          detection.remove = () => {
+            link.remove();
+            prevRemove();
+          };
+        }
       }, 20);
     },
     true,
@@ -390,5 +407,41 @@ test("result wording on the home page (FAQ) is never taken as a result", async (
   assert.ok(!(env.banner() && /File attached/.test(env.banner().text)));
   await until(() => env.onDetectionPage(), "detection page");
   await until(() => env.banner() && /File attached/.test(env.banner().text), "success banner");
+  env.close();
+});
+
+// Reported: Try again showed the old error again immediately. The site keeps its file input on
+// the detection page, so the retry attached there while the old error card was still showing.
+for (const [name, opts] of [
+  ["browser back", { keepInput: true }],
+  ["the site's Back link", { keepInput: true, backLink: true }],
+]) {
+  test(`Try again doesn't re-show the old error before the site reacts (${name})`, async () => {
+    const env = await attachedSignedIn(opts);
+    env.showOutcome("error");
+    await until(() => env.banner() && /Unexpected error/.test(env.banner().text), "error banner");
+    const button = [...env.w.__bannerRoot.querySelectorAll(".actions button")].find((b) => b.textContent === "Try again");
+    button.click();
+    await until(() => env.log.filter((e) => e === "change").length === 2, "second attach");
+    if (opts.backLink) assert.ok(env.log.includes("back-link"), "used the site's Back link");
+    await sleep(10); // before the site re-renders
+    assert.ok(!(env.banner() && /Unexpected error/.test(env.banner().text)), "old error not reported again");
+
+    // The site analyses the new attempt and succeeds this time.
+    await until(() => env.banner() && /File attached/.test(env.banner().text), "success for the retry");
+    env.showOutcome("result");
+    await until(() => env.banner() === null, "banner hides", 6000);
+    env.close();
+  });
+}
+
+test("Try again when the site fails again: the new error is reported after the site reacts", async () => {
+  const env = await attachedSignedIn({ keepInput: true });
+  env.showOutcome("error");
+  await until(() => env.banner() && /Unexpected error/.test(env.banner().text), "error banner");
+  [...env.w.__bannerRoot.querySelectorAll(".actions button")].find((b) => b.textContent === "Try again").click();
+  await until(() => env.banner() && /File attached/.test(env.banner().text), "retry is detecting");
+  env.showOutcome("error");
+  await until(() => env.banner() && /Unexpected error/.test(env.banner().text), "new error banner");
   env.close();
 });
