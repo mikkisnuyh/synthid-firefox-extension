@@ -18,6 +18,7 @@ No build step. Plain scripts, using the `browser.*` promise API.
 | `src/content/banner.js` | synthid.com content script; also injected into source pages for notices | Shadow-DOM banner UI. |
 | `src/content/synthid.js` | synthid.com content script | Attaches the pending file to the site's file input (paste fallback); handles the Terms and sign-in dialogs. |
 | `src/options/options.*` | options page | Settings, plus the "all sites" grant. |
+| `src/popup/popup.*` | toolbar popup | Menu: "Pick media on this page", plus links to synthid.com and the settings. |
 | `src/grant/grant.*` | extension page | One-click grant page for a single origin, used when the permission couldn't be requested inside the original click. |
 
 ## Shared globals (classic scripts, no modules)
@@ -81,6 +82,7 @@ Defines `globalThis.SynthIDPicker`.
 | synthid.js → bg | `{type:"synthid:attached", signInRequired:boolean}` | `{ok:true}`. The bg sets `attachedAt` and `signInSeen\|=signInRequired`, and sets `autoAttach = signInRequired` (re-attach automatically only after a sign-in redirect). |
 | synthid.js → bg | `{type:"synthid:clear"}` | `{ok:true}` (removes the record) |
 | picker.js → bg | `{type:"synthid:picked", media}` | none |
+| popup → bg | `{type:"synthid:startPicker", tabId}` | `{ok:boolean}`. Accepted only from the popup page; `ok:false` when the page blocks injection. |
 | grant page → bg | `{type:"synthid:granted", requestId}` | `{ok:boolean}` |
 
 Firefox runtime messaging uses structured clone, so `Blob` crosses the boundary intact.
@@ -101,8 +103,8 @@ Items are created in `runtime.onInstalled` (and `runtime.onStartup`, after `menu
    - If the request is declined, show a notice in the source tab (inject banner.js plus a `func` that calls `SynthIDBanner.show`).
 2. **find-media**: `scripting.executeScript({target:{tabId, frameIds:[info.frameId]}, files:["src/content/resolve.js"]})`, then a `func` that does `SynthIDResolve.fromElement(browser.menus.getTargetElement(id))` and returns the media. Continue with **acquire**.
 
-### Toolbar or shortcut
-`action.onClicked(tab)` injects `resolve.js` and `picker.js` into the top frame and calls `SynthIDPicker.start()`. On `synthid:picked`, continue with **acquire** using `sender.tab`.
+### Toolbar menu or shortcut
+The toolbar button opens the popup (`action.default_popup`), so `action.onClicked` never fires. Opening the popup is a toolbar click, which grants `activeTab`. The popup's "Pick media on this page" button sends `synthid:startPicker` with the active tab's id. The `start-picker` command (Alt+Shift+S) skips the menu. Both call `startPicker(tabId)`, which injects `resolve.js` and `picker.js` into the top frame and calls `SynthIDPicker.start()`. `_execute_action` (open the menu) has no default key. On `synthid:picked`, continue with **acquire** using `sender.tab`.
 
 ### acquire(media, sourceTab, frameId)
 - **http(s):** if the background has no permission for the origin (this happens after the find-media or picker paths, where the user-action window has passed), open `src/grant/grant.html?origin=<pattern>&id=<requestId>` with `tabs.create`, next to the source tab. Keep the pending media in a small in-memory map keyed by `requestId`, and also in `storage.session` as a fallback (it's small: URL only). On `synthid:granted`, resume. Otherwise, `fetch(url, {credentials:"include", cache:"force-cache"})`.

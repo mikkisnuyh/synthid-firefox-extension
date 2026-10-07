@@ -111,7 +111,7 @@ function makeEnv(opts = {}) {
     onInstalled: makeEvent(),
     onStartup: makeEvent(),
     onMessage: makeEvent(),
-    actionOnClicked: makeEvent(),
+    commandsOnCommand: makeEvent(),
     permissionsOnAdded: makeEvent(),
     permissionsOnRemoved: makeEvent(),
     tabsOnRemoved: makeEvent(),
@@ -151,7 +151,7 @@ function makeEnv(opts = {}) {
       },
       onClicked: events.menusOnClicked,
     },
-    action: { onClicked: events.actionOnClicked },
+    commands: { onCommand: events.commandsOnCommand },
     permissions: {
       request: (perms) => {
         calls.permissionsRequest.push({ perms, synchronous: env.inListener });
@@ -177,6 +177,7 @@ function makeEnv(opts = {}) {
       },
     },
     tabs: {
+      query: async () => [...env.tabs.values()].filter((t) => t.active).slice(-1),
       create: async (props) => {
         calls.tabsCreate.push(props);
         if (opts.failOpenerTabId && props.openerTabId !== undefined) {
@@ -920,21 +921,72 @@ test("if the origin is still ungranted-after-grant and the fetch fails, no secon
 // ---------------------------------------------------------------------------
 // Toolbar picker
 
-test("toolbar button injects the picker and starting it; synthid:picked then resumes the check", async () => {
+const POPUP_URL = EXT_BASE + "src/popup/popup.html";
+
+function assertPickerInjected(env, tabId) {
+  assert.deepEqual(env.calls.executeScript[0].files, ["src/content/resolve.js", "src/content/picker.js"]);
+  assert.deepEqual(env.calls.executeScript[0].target, { tabId, frameIds: [0] });
+  assert.equal(env.calls.executeScript[0].injectImmediately, true);
+  assert.equal(typeof env.calls.executeScript[1].func, "function");
+}
+
+test("popup's Pick media button starts the picker; synthid:picked then resumes the check", async () => {
   const env = await loadBackground({ granted: [CDN_PATTERN] });
   env.fetchHandler = async () => pngResponse();
   const tab = env.addTab(sourceTab());
-  env.events.actionOnClicked.fire(tab);
-  await waitFor(() => env.calls.executeScript.length === 2, "picker injection");
-  assert.deepEqual(env.calls.executeScript[0].files, ["src/content/resolve.js", "src/content/picker.js"]);
-  assert.deepEqual(env.calls.executeScript[0].target, { tabId: 5, frameIds: [0] });
-  assert.equal(typeof env.calls.executeScript[1].func, "function");
+  const reply = await env.send({ type: "synthid:startPicker", tabId: tab.id }, { id: EXT_ID, url: POPUP_URL });
+  assert.deepEqual(reply, { ok: true });
+  assert.equal(env.calls.executeScript.length, 2);
+  assertPickerInjected(env, 5);
 
   const media = { kind: "image", url: CDN_PNG, isBlob: false, isMediaSource: false };
   const sender = { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 };
   assert.equal(await env.send({ type: "synthid:picked", media }, sender), undefined);
   await waitFor(() => env.synthidTabs().length === 1, "synthid tab");
   assert.equal((await getPending(env, env.synthidTabs()[0].id)).found, true);
+});
+
+test("synthid:startPicker is refused unless it comes from the popup", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  for (const sender of [
+    { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 },
+    { id: EXT_ID, url: EXT_BASE + "src/grant/grant.html" },
+    { id: "other@ext", url: POPUP_URL },
+  ]) {
+    const reply = await env.send({ type: "synthid:startPicker", tabId: tab.id }, sender);
+    assert.notEqual(reply?.ok, true);
+  }
+  assert.deepEqual(await env.send({ type: "synthid:startPicker" }, { id: EXT_ID, url: POPUP_URL }), { ok: false });
+  assert.equal(env.calls.executeScript.length, 0);
+});
+
+test("synthid:startPicker replies ok:false when the page blocks injection", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  env.scriptHandler = () => {
+    throw new Error("Missing host permission for the tab");
+  };
+  const reply = await env.send({ type: "synthid:startPicker", tabId: tab.id }, { id: EXT_ID, url: POPUP_URL });
+  assert.deepEqual(reply, { ok: false });
+});
+
+test("the start-picker shortcut starts the picker in the given tab, or the active tab", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  env.events.commandsOnCommand.fire("start-picker", tab);
+  await waitFor(() => env.calls.executeScript.length === 2, "picker injection");
+  assertPickerInjected(env, 5);
+
+  env.calls.executeScript.length = 0;
+  env.events.commandsOnCommand.fire("start-picker");
+  await waitFor(() => env.calls.executeScript.length === 2, "picker injection via active tab");
+  assertPickerInjected(env, 5);
+
+  env.calls.executeScript.length = 0;
+  env.events.commandsOnCommand.fire("_execute_action", tab);
+  await tick();
+  assert.equal(env.calls.executeScript.length, 0);
 });
 
 test("synthid:picked with nothing shows the nothing-found notice", async () => {

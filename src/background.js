@@ -56,6 +56,7 @@ const Pending = {
 
 const SYNTHID_URL = "https://synthid.com/";
 const GRANT_PAGE = "src/grant/grant.html";
+const POPUP_PAGE = "src/popup/popup.html";
 const GRANT_KEY_PREFIX = "grant:";
 const GRANT_TTL_MS = 30 * 60 * 1000;
 const WORKING_NOTICE_DELAY_MS = 800;
@@ -347,25 +348,41 @@ async function onFindMedia(info, tab) {
 }
 
 // ---------------------------------------------------------------------------
-// Toolbar button / shortcut: pick mode
+// Toolbar menu / shortcut: pick mode
+//
+// The toolbar button opens the popup menu (action.onClicked doesn't fire when a
+// popup is set). Its "Pick media" button and the start-picker shortcut both end up here.
 
-browser.action.onClicked.addListener(async (tab) => {
+async function startPicker(tabId) {
+  if (typeof tabId !== "number") return false;
   try {
     await browser.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [0] },
+      target: { tabId, frameIds: [0] },
       files: ["src/content/resolve.js", "src/content/picker.js"],
       injectImmediately: true,
     });
     await browser.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [0] },
+      target: { tabId, frameIds: [0] },
       injectImmediately: true,
       func: () => {
         SynthIDPicker.start();
       },
     });
+    return true;
   } catch (e) {
     console.warn("SynthID Check: can't start the picker on this page", e);
+    return false;
   }
+}
+
+browser.commands.onCommand.addListener(async (name, tab) => {
+  if (name !== "start-picker") return;
+  let tabId = tab?.id;
+  if (typeof tabId !== "number") {
+    const [active] = await browser.tabs.query({ active: true, currentWindow: true });
+    tabId = active?.id;
+  }
+  startPicker(tabId);
 });
 
 // ---------------------------------------------------------------------------
@@ -722,6 +739,10 @@ function isFromGrantPage(sender) {
   return typeof sender.url === "string" && sender.url.startsWith(browser.runtime.getURL(GRANT_PAGE));
 }
 
+function isFromPopup(sender) {
+  return typeof sender.url === "string" && sender.url.startsWith(browser.runtime.getURL(POPUP_PAGE));
+}
+
 async function onGetPending(tabId) {
   await openInFlight;
   const rec = await Pending.get(tabId);
@@ -783,6 +804,10 @@ browser.runtime.onMessage.addListener((msg, sender) => {
         else notify(sender.tab.id, { state: "info", message: TEXT.nothingFound });
       }
       return undefined;
+
+    case "synthid:startPicker":
+      if (!isFromPopup(sender)) return Promise.resolve({ ok: false });
+      return startPicker(msg.tabId).then((ok) => ({ ok }));
 
     case "synthid:granted":
       if (!isFromGrantPage(sender)) return Promise.resolve({ ok: false });

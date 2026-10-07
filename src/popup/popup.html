@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SynthID Check</title>
+  <link rel="stylesheet" href="../options/options.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="page-popup">
+  <header>
+    <img src="../../icons/icon.svg" alt="" width="24" height="24">
+    <h1>SynthID Check</h1>
+  </header>
+
+  <button type="button" id="pick" class="primary wide">Pick media on this page</button>
+  <p id="note" class="status" role="status" hidden>Pick mode isn't available on this page.</p>
+
+  <p class="muted hint">
+    You can also right-click any image, video or audio and choose
+    <strong>Check with SynthID</strong>.
+  </p>
+
+  <div class="secondary">
+    <button type="button" id="open-site" class="link">Open synthid.com</button>
+    <button type="button" id="settings" class="link">Settings</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

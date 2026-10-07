@@ -1,0 +1,21 @@
+.page-popup {
+  width: 300px;
+  padding: 14px 16px 12px;
+  font-size: 14px;
+}
+
+.page-popup header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.9rem; }
+.page-popup h1 { font-size: 1rem; margin: 0; }
+
+.page-popup button.wide { width: 100%; padding: 0.55rem 0.9rem; font-weight: 600; }
+
+.page-popup .status { margin: 0.6rem 0 0; }
+.page-popup .hint { margin: 0.9rem 0 0.6rem; font-size: 0.9em; }
+
+.page-popup .secondary {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.page-popup .secondary button.link { padding-left: 0; padding-right: 0; }

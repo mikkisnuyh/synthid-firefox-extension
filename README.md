@@ -5,8 +5,8 @@ Right-click an image, video, or audio element to check it for a SynthID watermar
 ## How to use
 
 - **Context menu:** Right-click an image, video, or audio element and select "Check with SynthID". If the site covers the media with an overlay, use "Find media here and check with SynthID" from the page or frame context menu.
-- **Toolbar button:** Click the extension icon to enter pick mode and highlight media as you move the cursor. Click the media you want to check.
-- **Keyboard shortcut:** Press Alt+Shift+S to start pick mode.
+- **Toolbar menu:** Click the extension icon to open its menu, then choose **Pick media on this page**. Media is highlighted as you move the cursor; click the one you want to check, or press Esc to cancel. The menu also links to synthid.com and the settings.
+- **Keyboard shortcut:** Press Alt+Shift+S to start pick mode directly, without the menu. You can change it, or add a shortcut that opens the menu, in about:addons → Manage Extension Shortcuts.
 
 ## What it can and can't detect
 

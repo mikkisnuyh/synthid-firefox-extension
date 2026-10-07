@@ -8,25 +8,48 @@
     "96": "icons/icon.svg"
   },
   "background": {
-    "scripts": ["src/lib/media.js", "src/lib/pending.js", "src/background.js"]
+    "scripts": [
+      "src/lib/media.js",
+      "src/lib/pending.js",
+      "src/background.js"
+    ]
   },
-  "permissions": ["menus", "activeTab", "scripting", "storage", "clipboardWrite"],
-  "optional_host_permissions": ["<all_urls>"],
+  "permissions": [
+    "menus",
+    "activeTab",
+    "scripting",
+    "storage",
+    "clipboardWrite"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://synthid.com/*"],
-      "js": ["src/content/banner.js", "src/content/synthid.js"],
+      "matches": [
+        "https://synthid.com/*"
+      ],
+      "js": [
+        "src/content/banner.js",
+        "src/content/synthid.js"
+      ],
       "run_at": "document_idle"
     }
   ],
   "action": {
-    "default_title": "Pick media to check with SynthID",
-    "default_icon": "icons/icon.svg"
+    "default_title": "SynthID Check",
+    "default_icon": "icons/icon.svg",
+    "default_popup": "src/popup/popup.html"
   },
   "commands": {
-    "_execute_action": {
-      "suggested_key": { "default": "Alt+Shift+S" },
+    "start-picker": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      },
       "description": "Pick media on the page to check with SynthID"
+    },
+    "_execute_action": {
+      "description": "Open the SynthID Check menu"
     }
   },
   "options_ui": {
@@ -37,7 +60,9 @@
       "id": "@synthid-check",
       "strict_min_version": "140.0",
       "data_collection_permissions": {
-        "required": ["websiteContent"]
+        "required": [
+          "websiteContent"
+        ]
       }
     }
   }
