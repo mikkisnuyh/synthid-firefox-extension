@@ -17,9 +17,8 @@ No build step. Plain scripts, using the `browser.*` promise API.
 | `src/content/picker.js` | injected on demand | Pick mode: hover to highlight media, click to choose, Esc to cancel. |
 | `src/content/banner.js` | synthid.com content script; also injected into source pages for notices | Shadow-DOM banner UI. |
 | `src/content/synthid.js` | synthid.com content script | Attaches the pending file to the site's file input (paste fallback); handles the Terms and sign-in dialogs. |
-| `src/options/options.*` | options page | Settings, plus the "all sites" grant. |
+| `src/options/options.*` | options page | Settings; shows whether website access is on and offers to restore it if it was revoked. |
 | `src/popup/popup.*` | toolbar popup | Menu: "Pick media on this page", plus links to synthid.com and the settings. |
-| `src/grant/grant.*` | extension page | One-click grant page for a single origin, used when the permission couldn't be requested inside the original click. |
 
 ## Shared globals (classic scripts, no modules)
 
@@ -83,7 +82,6 @@ Defines `globalThis.SynthIDPicker`.
 | synthid.js → bg | `{type:"synthid:clear"}` | `{ok:true}` (removes the record) |
 | picker.js → bg | `{type:"synthid:picked", media}` | none |
 | popup → bg | `{type:"synthid:startPicker", tabId}` | `{ok:boolean}`. Accepted only from the popup page; `ok:false` when the page blocks injection. |
-| grant page → bg | `{type:"synthid:granted", requestId}` | `{ok:boolean}` |
 
 Firefox runtime messaging uses structured clone, so `Blob` crosses the boundary intact.
 
@@ -97,8 +95,8 @@ Items are created in `runtime.onInstalled` (and `runtime.onStartup`, after `menu
 
 `menus.onClicked(info, tab)`:
 1. **check-media** with `info.srcUrl`:
-   - If it's http(s), compute the origin pattern and, **synchronously before any await**, call `browser.permissions.request({origins:[pattern]})`, but only if not already known to be granted.
-   - To know that synchronously, keep a cached `Set` of granted origins plus a flag for `<all_urls>`. Refresh it from `permissions.getAll()` at startup and on `permissions.onAdded` / `onRemoved`.
+   - Website access (`<all_urls>`) is a required host permission, granted at install, so normally nothing is asked.
+   - Firefox lets users revoke it. The background keeps a synchronous flag for it, refreshed from the permissions API at startup and on `permissions.onAdded` / `onRemoved`. If it's off, the click handler calls `browser.permissions.request({origins:["<all_urls>"]})` **synchronously, before any await**. The `start-picker` command and the popup's Pick button do the same.
    - `activeTab` already covers the tab's own origin, so skip the request when the source URL is same-origin with `info.pageUrl`.
    - If the request is declined, show a notice in the source tab (inject banner.js plus a `func` that calls `SynthIDBanner.show`).
 2. **find-media**: `scripting.executeScript({target:{tabId, frameIds:[info.frameId]}, files:["src/content/resolve.js"]})`, then a `func` that does `SynthIDResolve.fromElement(browser.menus.getTargetElement(id))` and returns the media. Continue with **acquire**.
@@ -107,7 +105,7 @@ Items are created in `runtime.onInstalled` (and `runtime.onStartup`, after `menu
 The toolbar button opens the popup (`action.default_popup`), so `action.onClicked` never fires. Opening the popup is a toolbar click, which grants `activeTab`. The popup's "Pick media on this page" button sends `synthid:startPicker` with the active tab's id. The `start-picker` command (Alt+Shift+S) skips the menu. Both call `startPicker(tabId)`, which injects `resolve.js` and `picker.js` into the top frame and calls `SynthIDPicker.start()`. `_execute_action` (open the menu) has no default key. On `synthid:picked`, continue with **acquire** using `sender.tab`.
 
 ### acquire(media, sourceTab, frameId)
-- **http(s):** if the background has no permission for the origin (this happens after the find-media or picker paths, where the user-action window has passed), open `src/grant/grant.html?origin=<pattern>&id=<requestId>` with `tabs.create`, next to the source tab. Keep the pending media in a small in-memory map keyed by `requestId`, and also in `storage.session` as a fallback (it's small: URL only). On `synthid:granted`, resume. Otherwise, `fetch(url, {credentials:"include", cache:"force-cache"})`.
+- **http(s):** `fetch(url, {credentials:"include"})` from the background. If website access is off (the user declined or revoked it), fetch inside the source frame or top frame when the media is same-origin with it (`activeTab` covers that). Otherwise show a notice that points to the settings.
 - **`data:`:** `SynthIDMedia.dataUrlToBlob`.
 - **`blob:`:** run `SynthIDResolve.readBlobUrl(url)` in the source frame. If it fails, or `isMediaSource` is set, notify: "This is a streaming video and can't be captured. Download the file and upload it on synthid.com yourself."
 - **Validate:** check `isAcceptedType` (else notify which types are accepted) and size (≤ `MAX_BYTES`).
@@ -132,6 +130,6 @@ The toolbar button opens the popup (`action.default_popup`), so `action.onClicke
 - **Script injection.** Every `scripting.executeScript` call uses `injectImmediately: true`, so notices and pick mode work on pages that are still loading. Each tab has its own notice queue.
 - **Pick mode.** It ignores synthetic (`!isTrusted`) events, so a page can't choose the media for the user.
 - **Overlays.** `fromElement` hit-tests the centre of the part of the element that is on screen.
-- **Downloads.** The size cap is enforced while streaming the download. After a network error (for example a redirect to a host the extension can't access), there is one fallback to an in-page fetch for the page's own origin, then a notice. The grant page only opens when the origin isn't granted yet.
+- **Downloads.** The size cap is enforced while streaming the download. After a network error , there is one fallback to an in-page fetch for the page's own origin, then a notice.
 - **Permissions.** The options page doesn't list `https://synthid.com/*` as removable. If that access has been revoked anyway, the background shows a notice instead of opening a tab where nothing can be attached.
 - **Re-injection guards.** They check for function types (`typeof X?.fn === "function"`), so named page elements (window named properties) can't spoof them.

@@ -17,21 +17,15 @@
     </section>
 
     <section>
-      <h2>Site access</h2>
+      <h2>Website access</h2>
       <p class="muted">
         To check a file, SynthID Check downloads the original from the site that hosts it, which is
-        often a different site than the page you're on (for example an image CDN). Firefox asks
-        once per site. You can allow all sites here instead, so you're never asked again.
-        Files are only downloaded when you choose to check them.
+        often a different site than the page you're on (for example an image CDN). That's why it needs
+        access to all websites. Files are only downloaded when you choose to check them.
       </p>
-      <p id="all-status" class="status-line"></p>
-      <div class="buttons">
-        <button type="button" id="toggle-all" class="primary"></button>
-      </div>
-
-      <div id="sites-block" hidden>
-        <h3>Sites you've allowed</h3>
-        <ul id="sites" class="sites"></ul>
+      <p id="access-status" class="status-line"></p>
+      <div class="buttons" id="restore-block" hidden>
+        <button type="button" id="restore" class="primary">Allow access to all websites</button>
       </div>
       <p id="error" class="status" role="status" hidden></p>
     </section>

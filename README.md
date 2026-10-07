@@ -18,6 +18,10 @@ SynthID is Google DeepMind's invisible watermark. Google's AI products embed it,
 - Text is not supported. synthid.com and the Gemini app only check images, audio and video. There is no public SynthID text detector.
 - Streaming videos (e.g., YouTube) cannot be captured. Download and upload the file directly on synthid.com.
 
+## Website access
+
+Firefox asks for access to all websites when you install the extension, and that's the only permission prompt. You can turn it off later in about:addons → SynthID Check → Permissions; checks then can't download files from other sites, and the extension tells you so. To turn it back on, use the button in the extension's settings or about:addons.
+
 ## Requirements
 
 - Firefox 140 or later
@@ -33,7 +37,7 @@ SynthID is Google DeepMind's invisible watermark. Google's AI products embed it,
 | `scripting` | To inject media detection and picker scripts |
 | `storage` | To store extension settings in Firefox Sync storage |
 | `clipboardWrite` | To copy images to the clipboard as a fallback |
-| `optional_host_permissions` | Requested per site only when needed to download the original file |
+| Access to all websites (`host_permissions: <all_urls>`) | Granted once when you install. Needed to download the original file from whichever site hosts it (often a different site than the page, such as an image CDN). Files are only downloaded when you start a check. |
 | Content script on synthid.com only | To attach the file to synthid.com's own upload form and show status (it never signs in or accepts terms for you) |
 
 **Data collection:** This extension declares `websiteContent` in its manifest. When you initiate a check, the file you choose is downloaded from the site hosting it and sent to synthid.com (Google's service). No other data is collected or sent.

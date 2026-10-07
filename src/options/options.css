@@ -73,20 +73,3 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); }
 
 button.link { background: none; border-color: transparent; color: var(--accent); padding: 0.2rem 0.4rem; }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
-
-.sites { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; }
-.sites li { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.35rem 0.6rem; }
-.sites li + li { border-top: 1px solid var(--border); }
-.sites span { overflow-wrap: anywhere; }
-
-/* Grant page */
-.page-grant { display: flex; justify-content: center; padding: 10vh 16px 16px; }
-.page-grant .card {
-  max-width: 520px;
-  width: 100%;
-  padding: 24px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.page-grant .status { margin: 1rem 0 0; }
