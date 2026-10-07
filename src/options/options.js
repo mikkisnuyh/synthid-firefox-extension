@@ -27,7 +27,10 @@
   });
 
   dropZone.addEventListener("change", () => {
-    browser.storage.sync.set({ dropZone: dropZone.checked }).catch(showError);
+    browser.storage.sync
+      .set({ dropZone: dropZone.checked })
+      .then(() => browser.runtime.sendMessage({ type: "synthid:syncDropZone" }))
+      .catch(showError);
   });
 
   // Granted at install. Firefox lets users revoke it, so offer a way back.

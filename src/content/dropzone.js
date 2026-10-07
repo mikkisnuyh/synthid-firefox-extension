@@ -3,6 +3,7 @@
  * Registered as a content script for every page and frame (scripting.registerContentScripts) while the
  * "drop zone" setting is on. The zone is shown in the frame where the drag started: Firefox doesn't let
  * a cross-origin frame drop into its parent, so a zone in the top frame couldn't receive those drops.
+ * In a frame, it goes in the corner of the part of the frame that is on screen.
  *
  * All listeners sit on window in the capture phase and are added at document_start, so they run before
  * the page's own window listeners and a page can't swallow drops meant for the zone.
@@ -11,23 +12,24 @@
   "use strict";
   if (typeof globalThis.SynthIDDropZone?.hide === "function") return;
 
+  const HTML_NS = "http://www.w3.org/1999/xhtml";
   const NATIVE_IMAGE = "application/x-moz-nativeimage";
-  // Smaller frames (ads, embeds) have no room for the zone.
-  const MIN_FRAME_WIDTH = 240;
-  const MIN_FRAME_HEIGHT = 160;
+  const CHECKABLE_URL = /^(https?|data|blob):/i;
+  const ZONE_WIDTH = 240;
+  const ZONE_HEIGHT = 132;
+  const MARGIN = 16;
+  // Smaller visible areas (ads, embeds) have no room for the zone.
+  const MIN_WIDTH = 240;
+  const MIN_HEIGHT = 160;
 
+  // The zone itself is the popover, inside the closed shadow root, so page styles (a bare
+  // ::backdrop rule, [popover] selectors) and popover events can't reach it.
   const CSS = `
-    :host {
-      all: initial !important;
-      position: fixed !important; inset: auto 16px 16px auto !important; z-index: 2147483647 !important;
-      display: block !important; box-sizing: border-box !important;
-      width: min(240px, calc(100vw - 32px)) !important; height: 132px !important;
-      margin: 0 !important; padding: 0 !important; overflow: visible !important;
-      border: 0 !important; background: transparent !important; color: inherit !important;
-    }
+    :host { all: initial !important; display: block !important; }
     .zone {
       --bg: rgba(255, 255, 255, 0.72); --fg: #1b1b1f; --accent: #1a73e8; --hover-bg: rgba(232, 240, 254, 0.92);
-      box-sizing: border-box; width: 100%; height: 100%;
+      position: fixed; inset: auto; margin: 0; z-index: 2147483647;
+      box-sizing: border-box; width: ${ZONE_WIDTH}px; height: ${ZONE_HEIGHT}px; overflow: visible;
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
       padding: 12px; border-radius: 14px; border: 2px dashed var(--accent);
       background: var(--bg); color: var(--fg);
@@ -37,6 +39,7 @@
       opacity: 0.85;
       transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease;
     }
+    .zone::backdrop { background: transparent; }
     .zone.over { opacity: 1; border-style: solid; background: var(--hover-bg); transform: scale(1.03); }
     .zone * { pointer-events: none; }
     .icon { width: 28px; height: 28px; color: var(--accent); }
@@ -57,71 +60,187 @@
   let zone = null;
   // The media being dragged while the zone is shown, else null.
   let dragged = null;
+  // A drop counts only after the pointer entered the zone from elsewhere on the page,
+  // so releasing a drag in place can't start a check.
+  let armed = false;
+  // Bumped by every dragstart and hide, so a stale deferred show does nothing.
+  let generation = 0;
   let showTimer = null;
+  let probe = null;
 
   function ensure() {
-    if (host && zone) return;
-    host = document.createElement("synthid-check-dropzone");
-    // resolve.js skips [data-synthid-picker] elements, so the zone is never taken for page media.
-    host.setAttribute("data-synthid-picker", "dropzone");
-    const root = host.attachShadow({ mode: "closed" });
+    if (host && zone) return true;
+    try {
+      // A plain div: pages can't define it as a custom element and reach the closed shadow root.
+      const h = document.createElementNS(HTML_NS, "div");
+      // resolve.js skips [data-synthid-picker] elements, so the zone is never taken for page media.
+      h.setAttribute("data-synthid-picker", "dropzone");
+      const root = h.attachShadow({ mode: "closed" });
 
-    const style = document.createElement("style");
-    style.textContent = CSS;
+      const style = document.createElementNS(HTML_NS, "style");
+      style.textContent = CSS;
 
-    zone = document.createElement("div");
-    zone.className = "zone";
-    zone.setAttribute("role", "region");
-    zone.setAttribute("aria-label", "Drop here to check with SynthID");
+      const z = document.createElementNS(HTML_NS, "div");
+      z.className = "zone";
+      z.setAttribute("popover", "manual");
+      z.setAttribute("role", "region");
+      z.setAttribute("aria-label", "Drop here to check with SynthID");
 
-    const svgNs = "http://www.w3.org/2000/svg";
-    const icon = document.createElementNS(svgNs, "svg");
-    icon.setAttribute("class", "icon");
-    icon.setAttribute("viewBox", "0 0 24 24");
-    icon.setAttribute("aria-hidden", "true");
-    const path = document.createElementNS(svgNs, "path");
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", "currentColor");
-    path.setAttribute("stroke-width", "2");
-    path.setAttribute("stroke-linecap", "round");
-    path.setAttribute("stroke-linejoin", "round");
-    path.setAttribute("d", "M12 4v11m0 0-4-4m4 4 4-4M5 19h14");
-    icon.appendChild(path);
+      const svgNs = "http://www.w3.org/2000/svg";
+      const icon = document.createElementNS(svgNs, "svg");
+      icon.setAttribute("class", "icon");
+      icon.setAttribute("viewBox", "0 0 24 24");
+      icon.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS(svgNs, "path");
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "currentColor");
+      path.setAttribute("stroke-width", "2");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      path.setAttribute("d", "M12 4v11m0 0-4-4m4 4 4-4M5 19h14");
+      icon.appendChild(path);
 
-    const label = document.createElement("div");
-    label.textContent = "Drop here to check with SynthID";
-    const hint = document.createElement("div");
-    hint.className = "hint";
-    hint.textContent = "Opens synthid.com in a new tab";
+      const label = document.createElementNS(HTML_NS, "div");
+      label.textContent = "Drop here to check with SynthID";
+      const hint = document.createElementNS(HTML_NS, "div");
+      hint.className = "hint";
+      hint.textContent = "Opens synthid.com in a new tab";
 
-    zone.append(icon, label, hint);
-    root.append(style, zone);
+      z.append(icon, label, hint);
+      root.append(style, z);
+      host = h;
+      zone = z;
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   function isZone(target) {
     return host !== null && target === host;
   }
 
-  function show() {
-    ensure();
-    zone.classList.remove("over");
-    if (!host.isConnected) (document.documentElement || document.body).appendChild(host);
-    // The top layer keeps the zone above the page's own modal dialogs and fullscreen elements.
+  // Everything outside an open modal dialog is inert, so the zone has to live inside it.
+  function container() {
     try {
-      if (!host.hasAttribute("popover")) host.setAttribute("popover", "manual");
-      if (!host.matches(":popover-open")) host.showPopover();
+      const modals = document.querySelectorAll("dialog:modal");
+      if (modals.length) return modals[modals.length - 1];
+    } catch (e) {}
+    return document.documentElement || document.body;
+  }
+
+  function isTopFrame() {
+    try {
+      return window === window.top;
     } catch (e) {
-      // No popover support: z-index alone has to do.
+      return false;
+    }
+  }
+
+  function viewport() {
+    const w = globalThis.innerWidth;
+    const h = globalThis.innerHeight;
+    return { left: 0, top: 0, right: Number.isFinite(w) ? w : 0, bottom: Number.isFinite(h) ? h : 0 };
+  }
+
+  function roomy(area) {
+    return area && area.right - area.left >= MIN_WIDTH && area.bottom - area.top >= MIN_HEIGHT ? area : null;
+  }
+
+  function removeProbe() {
+    if (!probe) return;
+    probe.observer.disconnect();
+    probe.el.remove();
+    probe = null;
+  }
+
+  // The part of this frame's viewport that is on screen, or null if too small. A frame sized to its
+  // content (embeds, webmail) can reach far below the visible page; its own corner may be off screen.
+  function visibleArea(callback) {
+    const vp = viewport();
+    if (isTopFrame() || typeof globalThis.IntersectionObserver !== "function") {
+      callback(roomy(vp));
+      return;
+    }
+    try {
+      const el = document.createElementNS(HTML_NS, "div");
+      el.setAttribute("data-synthid-picker", "probe");
+      el.style.cssText =
+        "all:initial !important;position:fixed !important;inset:0 !important;" +
+        "opacity:0 !important;pointer-events:none !important;";
+      const observer = new IntersectionObserver((entries) => {
+        const entry = entries[entries.length - 1];
+        removeProbe();
+        if (!entry || !entry.isIntersecting) return callback(null);
+        const r = entry.intersectionRect;
+        callback(
+          roomy({
+            left: Math.max(r.left, vp.left),
+            top: Math.max(r.top, vp.top),
+            right: Math.min(r.right, vp.right),
+            bottom: Math.min(r.bottom, vp.bottom),
+          }),
+        );
+      });
+      probe = { el, observer };
+      (document.documentElement || document.body).appendChild(el);
+      observer.observe(el);
+    } catch (e) {
+      removeProbe();
+      callback(roomy(vp));
+    }
+  }
+
+  // Bottom-right of the area, or bottom-left when the drag started where the zone would appear.
+  function place(area, point) {
+    const width = Math.min(ZONE_WIDTH, area.right - area.left - 2 * MARGIN);
+    const top = area.bottom - MARGIN - ZONE_HEIGHT;
+    const rightLeft = area.right - MARGIN - width;
+    const underPointer =
+      point.x >= rightLeft && point.x <= area.right - MARGIN && point.y >= top && point.y <= area.bottom - MARGIN;
+    const s = zone.style;
+    s.width = width + "px";
+    s.top = "auto";
+    s.bottom = viewport().bottom - area.bottom + MARGIN + "px";
+    if (underPointer) {
+      s.left = area.left + MARGIN + "px";
+      s.right = "auto";
+    } else {
+      s.left = "auto";
+      s.right = viewport().right - area.right + MARGIN + "px";
+    }
+  }
+
+  function show(area, point) {
+    if (!ensure()) return false;
+    try {
+      zone.classList.remove("over");
+      place(area, point);
+      const parent = container();
+      if (host.parentNode !== parent) parent.appendChild(host);
+      // The top layer keeps the zone above the page's own dialogs and fullscreen elements.
+      try {
+        if (!zone.matches(":popover-open")) zone.showPopover();
+      } catch (e) {
+        // No popover support: z-index alone has to do.
+      }
+      return true;
+    } catch (e) {
+      if (host) host.remove();
+      return false;
     }
   }
 
   function hide() {
+    generation++;
     clearTimeout(showTimer);
     showTimer = null;
+    removeProbe();
     dragged = null;
+    armed = false;
     if (!host) return;
     try {
-      if (host.matches(":popover-open")) host.hidePopover();
+      if (zone.matches(":popover-open")) zone.hidePopover();
     } catch (e) {}
     host.remove();
   }
@@ -130,9 +249,11 @@
   function mediaForDrag(e) {
     const resolve = globalThis.SynthIDResolve;
     if (typeof resolve?.fromElement !== "function") return null;
-    const target = e.target;
     let hit = null;
     try {
+      // composedPath reaches an image inside the page's own (open) shadow roots.
+      const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+      const target = path[0] && path[0].nodeType === 1 ? path[0] : e.target;
       const tag = target && target.nodeType === 1 ? target.localName : "";
       if (tag === "img" || tag === "picture" || tag === "image") {
         hit = resolve.fromElement(target);
@@ -144,15 +265,8 @@
     } catch (err) {
       return null;
     }
-    if (!hit || hit.kind !== "image" || !hit.url) return null;
+    if (!hit || hit.kind !== "image" || !hit.url || !CHECKABLE_URL.test(hit.url)) return null;
     return { kind: hit.kind, url: hit.url, isBlob: hit.isBlob, isMediaSource: hit.isMediaSource };
-  }
-
-  function frameHasRoom() {
-    const w = globalThis.innerWidth;
-    const h = globalThis.innerHeight;
-    if (!Number.isFinite(w) || !Number.isFinite(h)) return true;
-    return w >= MIN_FRAME_WIDTH && h >= MIN_FRAME_HEIGHT;
   }
 
   function onDragStart(e) {
@@ -160,14 +274,18 @@
     if (!e.isTrusted) return;
     hide();
     const media = mediaForDrag(e);
-    if (!media || !frameHasRoom()) return;
+    if (!media) return;
+    const gen = generation;
+    const point = { x: e.clientX, y: e.clientY };
     // Show after the page's own dragstart handlers ran: if one cancelled the drag, no drag
     // (and no dragend to hide the zone) follows.
     showTimer = setTimeout(() => {
       showTimer = null;
-      if (e.defaultPrevented) return;
-      dragged = media;
-      show();
+      if (gen !== generation || e.defaultPrevented) return;
+      visibleArea((area) => {
+        if (gen !== generation || !area) return;
+        if (show(area, point)) dragged = media;
+      });
     }, 0);
   }
 
@@ -180,7 +298,12 @@
     return "move";
   }
 
-  function acceptDrag(e) {
+  function onDragEnterOrOver(e) {
+    if (!dragged || !zone || !e.isTrusted) return;
+    const over = isZone(e.target);
+    if (!over) armed = true;
+    zone.classList.toggle("over", over && armed);
+    if (!over || !armed) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     if (e.dataTransfer) {
@@ -190,15 +313,8 @@
     }
   }
 
-  function onDragEnterOrOver(e) {
-    if (!dragged || !e.isTrusted) return;
-    const over = isZone(e.target);
-    zone.classList.toggle("over", over);
-    if (over) acceptDrag(e);
-  }
-
   function onDragLeave(e) {
-    if (!dragged || !e.isTrusted) return;
+    if (!dragged || !zone || !e.isTrusted) return;
     if (isZone(e.target)) zone.classList.remove("over");
   }
 
@@ -209,24 +325,25 @@
       hide();
       return;
     }
+    // The page never sees drops on the zone, counted or not.
     e.preventDefault();
     e.stopImmediatePropagation();
-    const media = dragged;
+    const media = armed ? dragged : null;
     hide();
-    browser.runtime.sendMessage({ type: "synthid:dropped", media }).catch(() => {});
+    if (media) browser.runtime.sendMessage({ type: "synthid:dropped", media }).catch(() => {});
   }
 
-  function onDragEnd(e) {
+  function onDragEndOrPageHide(e) {
     if (!e.isTrusted) return;
     hide();
   }
 
   // dragend goes to the drag source, so a page that removed it from the document mid-drag hides
-  // dragend from us. No mouse events reach the page during a drag; a move with no button down
-  // means it's over.
-  function onMouseMove(e) {
-    if (!dragged || !e.isTrusted || e.buttons !== 0) return;
-    hide();
+  // dragend from us. No mouse events reach the page during a drag; a release or a move with no
+  // button down means it's over.
+  function onMouse(e) {
+    if (!dragged || !e.isTrusted) return;
+    if (e.type === "mouseup" || e.buttons === 0) hide();
   }
 
   window.addEventListener("dragstart", onDragStart, true);
@@ -234,9 +351,10 @@
   window.addEventListener("dragover", onDragEnterOrOver, true);
   window.addEventListener("dragleave", onDragLeave, true);
   window.addEventListener("drop", onDrop, true);
-  window.addEventListener("dragend", onDragEnd, true);
-  window.addEventListener("mousemove", onMouseMove, true);
-  window.addEventListener("pagehide", hide, true);
+  window.addEventListener("dragend", onDragEndOrPageHide, true);
+  window.addEventListener("mousemove", onMouse, true);
+  window.addEventListener("mouseup", onMouse, true);
+  window.addEventListener("pagehide", onDragEndOrPageHide, true);
 
   globalThis.SynthIDDropZone = { hide };
 })();

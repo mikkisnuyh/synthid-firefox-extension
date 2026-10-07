@@ -56,6 +56,7 @@ const Pending = {
 
 const SYNTHID_URL = "https://synthid.com/";
 const POPUP_PAGE = "src/popup/popup.html";
+const OPTIONS_PAGE = "src/options/options.html";
 const ALL_SITES = "<all_urls>";
 const WORKING_NOTICE_DELAY_MS = 800;
 const DEFAULT_SETTINGS = { openInForeground: true, dropZone: true };
@@ -686,6 +687,10 @@ function isFromPopup(sender) {
   return typeof sender.url === "string" && sender.url.startsWith(browser.runtime.getURL(POPUP_PAGE));
 }
 
+function isFromOptions(sender) {
+  return typeof sender.url === "string" && sender.url.startsWith(browser.runtime.getURL(OPTIONS_PAGE));
+}
+
 async function onGetPending(tabId) {
   await openInFlight;
   const rec = await Pending.get(tabId);
@@ -758,6 +763,12 @@ browser.runtime.onMessage.addListener((msg, sender) => {
         });
       }
       return undefined;
+
+    // Sent by the options page after a change, so it applies even if storage.onChanged
+    // doesn't wake a suspended event page.
+    case "synthid:syncDropZone":
+      if (!isFromOptions(sender)) return Promise.resolve({ ok: false });
+      return syncDropZone().then(() => ({ ok: true }));
 
     case "synthid:startPicker":
       if (!isFromPopup(sender)) return Promise.resolve({ ok: false });

@@ -6,7 +6,7 @@ Right-click an image, video, or audio element to check it for a SynthID watermar
 
 - **Context menu:** Right-click an image, video, or audio element and select "Check with SynthID". If the site covers the media with an overlay, use "Find media under the cursor and check with SynthID" from the page or frame context menu.
 - **Toolbar menu:** Click the extension icon to open its menu, then choose **Pick media on this page**. Media is highlighted as you move the cursor; click the one you want to check, or press Esc to cancel. The menu also links to synthid.com and the settings.
-- **Drag and drop:** Drag an image on a page. A box "Drop here to check with SynthID" appears in the bottom-right corner. Drop the image on it to start the check. The box goes away when the drag ends. You can turn this off with "Show a drop zone when you drag an image" in the settings; the change applies to pages you open or reload afterwards.
+- **Drag and drop:** Drag an image on a page. A box "Drop here to check with SynthID" appears in the bottom-right corner (bottom-left if you start dragging from there). Drop the image on it to start the check. The box goes away when the drag ends. You can turn this off with "Show a drop zone when you drag an image" in the settings; the change applies to pages you open or reload afterwards.
 - **Keyboard shortcut:** Press Alt+Shift+S to start pick mode directly, without the menu. You can change it, or add a shortcut that opens the menu, in about:addons → Manage Extension Shortcuts.
 
 ## What it can and can't detect
