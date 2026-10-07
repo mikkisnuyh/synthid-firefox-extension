@@ -14,6 +14,7 @@
   const AUTH_RESTORE_MAX_MS = 30000; // Firebase restoring a saved session
   const SIGN_IN_PROMPT_MAX_MS = 15000; // signed out: the site's sign-in prompt after attaching
   const TERMS_WAIT_MS = 10 * 60 * 1000; // the user reading the Terms
+  const OUTCOME_MAX_MS = 3 * 60 * 1000; // the site analysing the file (videos can be slow)
   const SUCCESS_HIDE_MS = 4000; // UI only: how long the success banner stays
 
   const Banner = globalThis.SynthIDBanner;
@@ -102,6 +103,18 @@
     } catch (e) {
       return null;
     }
+  }
+
+  // What synthid.com's detection page shows after a file was added: "detecting", "result",
+  // "error" (its "Something went wrong!" card or a quota message) or null. Visible text only,
+  // so collapsed FAQ answers on the home page don't count.
+  function pageOutcome() {
+    const t = document.body ? document.body.innerText || document.body.textContent || "" : "";
+    if (/something went wrong|quota again in/i.test(t)) return "error";
+    if (!/-detection\b/.test(location.pathname)) return null;
+    if (/Analysis Results|SynthID was (not )?detected|Unable to determine/i.test(t)) return "result";
+    if (/Detecting\.\.\./i.test(t)) return "detecting";
+    return null;
   }
 
   function signInShown() {
@@ -374,6 +387,37 @@
     }, SUCCESS_HIDE_MS);
   }
 
+  function showSiteError() {
+    show({
+      state: "error",
+      title: "Unexpected error",
+      message: "synthid.com couldn't check your file. Please try again later.",
+      actions: actionsAfter([{ id: "tryagain", label: "Try again", primary: true }]),
+    });
+  }
+
+  // After attaching: follow what the site does with the file, by watching the page.
+  async function watchOutcome(signedIn) {
+    const step = () => (signInShown() ? "signin" : pageOutcome());
+    const first = await waitFor(step, signedIn ? OUTCOME_MAX_MS : SIGN_IN_PROMPT_MAX_MS);
+    if (dismissed) return;
+    send({ type: "synthid:attached", signInRequired: first === "signin" }).catch(() => {});
+    if (first === "signin") return showSignIn();
+    if (first === "error") return showSiteError();
+    showSuccess();
+    if (first !== "detecting") return;
+    // Still analysing: an error can come after the success banner. Not awaited, so the
+    // banner's buttons stay usable meanwhile.
+    waitFor(() => {
+      const o = step();
+      return o === "detecting" ? null : o;
+    }, OUTCOME_MAX_MS).then((final) => {
+      if (dismissed) return;
+      if (final === "error") showSiteError();
+      else if (final === "signin") showSignIn();
+    });
+  }
+
   async function run() {
     if (busy || !file || dismissed) return;
     busy = true;
@@ -393,25 +437,7 @@
       const method = attach(fileInput() || input);
       console.debug("SynthID Check: attached via", method);
 
-      if (signedIn) {
-        send({ type: "synthid:attached", signInRequired: false }).catch(() => {});
-        showSuccess();
-        // Shouldn't happen, but if the site asks for sign-in anyway, say so.
-        waitFor(signInShown, SUCCESS_HIDE_MS).then((seen) => {
-          if (seen && !dismissed) {
-            send({ type: "synthid:attached", signInRequired: true }).catch(() => {});
-            showSignIn();
-          }
-        });
-        return;
-      }
-
-      // Signed out: the site answers with its sign-in prompt.
-      const prompt = await waitFor(signInShown, SIGN_IN_PROMPT_MAX_MS);
-      if (dismissed) return;
-      send({ type: "synthid:attached", signInRequired: !!prompt }).catch(() => {});
-      if (prompt) showSignIn();
-      else showSuccess();
+      await watchOutcome(signedIn);
     } catch (e) {
       if (dismissed) return;
       console.warn("SynthID Check: attach failed", e);
@@ -466,6 +492,10 @@
       clearTimeout(hideTimer);
       send({ type: "synthid:clear" }).catch(() => {});
     } else if (id === "retry" || id === "attach") {
+      run();
+    } else if (id === "tryagain") {
+      // From the detection page, go back to the upload page; run() waits for its file input.
+      if (!fileInput() && /-detection\b/.test(location.pathname)) history.back();
       run();
     } else if (id === "copy") {
       copyImage();

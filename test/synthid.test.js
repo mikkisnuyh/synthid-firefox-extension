@@ -60,7 +60,7 @@ function clearSession(idb) {
   });
 }
 
-function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = false, siteState = true } = {}) {
+function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = false, siteState = true, faqText = "" } = {}) {
   const dom = new JSDOM(`<!doctype html><body><input type="file" hidden></body>`, {
     url: "https://synthid.com/",
     runScripts: "outside-only",
@@ -102,6 +102,11 @@ function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = fal
   if (siteState) {
     w.localStorage.setItem("firstTime", JSON.stringify({ isInitialized: true, termsAccepted }));
   }
+  if (faqText) {
+    const faq = w.document.createElement("div");
+    faq.textContent = faqText;
+    w.document.body.append(faq);
+  }
   if (termsDialog) {
     const b = w.document.createElement("button");
     b.textContent = "Agree and continue";
@@ -109,6 +114,20 @@ function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = fal
     w.document.body.append(b);
   }
 
+  // Signed in, the site leaves the upload page for its detection page, shows "Detecting...",
+  // then a result or an error card. Going back restores the upload page.
+  let detection = null;
+  const showUploadPage = () => {
+    if (detection) detection.remove();
+    detection = null;
+    if (!w.document.querySelector("input[type=file]")) {
+      const input = w.document.createElement("input");
+      input.type = "file";
+      input.hidden = true;
+      w.document.body.append(input);
+    }
+  };
+  w.addEventListener("popstate", showUploadPage);
   w.document.addEventListener(
     "change",
     () => {
@@ -117,7 +136,16 @@ function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = fal
         const d = w.document.createElement("div");
         d.textContent = "Please sign in before detection.";
         w.document.body.append(d);
+        return;
       }
+      // The window's own timer, so it can't fire after the test closed the window.
+      w.setTimeout(() => {
+        w.history.pushState({}, "", "/image-detection");
+        w.document.querySelector("input[type=file]").remove();
+        detection = w.document.createElement("div");
+        detection.textContent = "Detecting...";
+        w.document.body.append(detection);
+      }, 20);
     },
     true,
   );
@@ -165,6 +193,15 @@ function setup({ termsAccepted = true, termsDialog = false, signInOnAttach = fal
     seedSession: () => seedSession(w.indexedDB),
     clearSession: () => clearSession(w.indexedDB),
     // What the site renders in the account button once a session is restored.
+    // Replace "Detecting..." with what the site shows when it's done.
+    showOutcome(kind) {
+      detection.textContent = {
+        result: "Analysis Results SynthID was not detected",
+        error: "error Something went wrong! Please wait and try again later",
+        quota: "You will start having image quota again in 3 hours",
+      }[kind];
+    },
+    onDetectionPage: () => !!detection,
     showAvatar() {
       const a = w.document.createElement("sid-account-avatar");
       const img = w.document.createElement("img");
@@ -192,6 +229,7 @@ test("signed in: waits for the session to be restored, then attaches and shows a
 
   env.showAvatar(); // Firebase finished restoring the session
   await until(() => env.log.includes("change"), "attach after restore");
+  await until(() => env.onDetectionPage(), "detection page");
   await until(() => env.banner() && /File attached/.test(env.banner().text), "success banner");
   assert.deepEqual(env.banner().buttons, [], "success banner has no action buttons");
   assert.ok(env.log.includes("synthid:attached:false"));
@@ -283,5 +321,74 @@ test("dismissing while waiting for the sign-in cancels the attach", async () => 
   await sleep(600);
   assert.ok(!env.log.includes("change"), "nothing attached after dismiss");
   assert.ok(env.log.includes("synthid:clear"));
+  env.close();
+});
+
+// ---------------------------------------------------------------------------
+// What the site does with the file
+
+async function attachedSignedIn(opts) {
+  const env = setup(opts);
+  await env.seedSession();
+  env.showAvatar();
+  env.start();
+  await until(() => env.onDetectionPage(), "detection page");
+  return env;
+}
+
+test("detecting, then a result: success without buttons that hides itself, no error", async () => {
+  const env = await attachedSignedIn();
+  await until(() => env.banner() && /File attached/.test(env.banner().text), "success banner");
+  assert.deepEqual(env.banner().buttons, []);
+  env.showOutcome("result");
+  await until(() => env.banner() === null, "banner hides itself", 6000);
+  await sleep(300);
+  assert.equal(env.banner(), null, "no error banner after a result");
+  env.close();
+});
+
+test("detecting, then the site's error card: neutral error banner with Try again, which re-attaches", async () => {
+  const env = await attachedSignedIn();
+  await until(() => env.banner() && /File attached/.test(env.banner().text), "success banner");
+  env.showOutcome("error");
+  await until(() => env.banner() && /Unexpected error/.test(env.banner().text), "error banner");
+  assert.match(env.banner().text, /couldn't check your file\. Please try again later\./);
+  assert.doesNotMatch(env.banner().text, /limit|quota/i, "doesn't claim a rate limit");
+  assert.ok(env.banner().buttons.includes("Try again"));
+  await sleep(4500);
+  assert.ok(env.banner() && /Unexpected error/.test(env.banner().text), "error banner stays");
+
+  const button = [...env.w.__bannerRoot.querySelectorAll(".actions button")].find((b) => b.textContent === "Try again");
+  button.click(); // back to the upload page, then attach again
+  await until(() => env.log.filter((e) => e === "change").length === 2, "second attach after Try again");
+  env.close();
+});
+
+test("an error after the success banner already hid still shows the error banner", async () => {
+  const env = await attachedSignedIn();
+  await until(() => env.banner() && /File attached/.test(env.banner().text), "success banner");
+  await until(() => env.banner() === null, "success hides", 6000);
+  env.showOutcome("error");
+  await until(() => env.banner() && /Unexpected error/.test(env.banner().text), "error banner");
+  env.close();
+});
+
+test("the site's quota message gets the same neutral error banner", async () => {
+  const env = await attachedSignedIn();
+  env.showOutcome("quota");
+  await until(() => env.banner() && /Unexpected error/.test(env.banner().text), "error banner");
+  env.close();
+});
+
+test("result wording on the home page (FAQ) is never taken as a result", async () => {
+  const env = setup({ faqText: "How do I interpret detection results? Analysis Results SynthID was detected" });
+  await env.seedSession();
+  env.showAvatar();
+  env.start();
+  await until(() => env.log.includes("change"), "attach");
+  // Still on the upload page for a moment: no success yet, only once "Detecting..." shows.
+  assert.ok(!(env.banner() && /File attached/.test(env.banner().text)));
+  await until(() => env.onDetectionPage(), "detection page");
+  await until(() => env.banner() && /File attached/.test(env.banner().text), "success banner");
   env.close();
 });

@@ -16,6 +16,7 @@ SynthID is Google DeepMind's invisible watermark. Google's AI products embed it,
 - Only detects SynthID watermarks from Google and partner systems. This is not a general AI detector.
 - Absence of a detected watermark does not mean the media was created by a human.
 - Text is not supported. synthid.com and the Gemini app only check images, audio and video. There is no public SynthID text detector.
+- If synthid.com reports an error while checking (for example after many checks in a short time), the extension shows "Unexpected error" with a **Try again** button.
 - Streaming videos (e.g., YouTube) cannot be captured. Download and upload the file directly on synthid.com.
 
 ## Website access

@@ -125,9 +125,10 @@ Declared with `run_at: document_start`, so the file transfer from the background
 4. **Attach:** `new DataTransfer()`, `items.add(file)`, `input.files = dt.files`, then dispatch `input` and `change` with `bubbles: true`.
    - If that throws, fall back to a synthetic `paste` on `document`.
    - If that fails too, use the Firefox Xray fallbacks through `window.wrappedJSObject` and `cloneInto`.
-5. **Result:**
-   - **Signed in:** send `synthid:attached` with `signInRequired: false` and show the "File attached" success at once: no buttons, hides itself after 4 s, and the pending record is then cleared. If the site shows its sign-in prompt anyway, switch to the sign-in banner.
-   - **Signed out:** wait for the site's sign-in prompt, then show "Sign in, then press Retry" with **Retry** and **Copy image**. When the account button later shows the user signed in, the banner says so.
+5. **Result:** follow what the site does with the file by watching the page (MutationObserver; 3-minute fallback only). Signed in, the site moves to its `*-detection` page and shows "Detecting...", then a result card or its "Something went wrong!" card.
+   - **"Detecting..." or a result:** send `synthid:attached` with `signInRequired: false`, then show the "File attached" success. It has no buttons, hides itself after 4 s, and the pending record is then cleared. Keep watching until the final state.
+   - **The site's error card, or its quota message** (at once or after the success): show a neutral "Unexpected error — synthid.com couldn't check your file. Please try again later." banner. It stays until dismissed, and doesn't claim a rate limit. **Try again** (click only) goes back to the upload page with `history.back()` and attaches the file again from memory.
+   - **Signed out:** the site shows its sign-in prompt instead. Show "Sign in, then press Retry" with **Retry** and **Copy image**. When the account button later shows the user signed in, the banner says so.
 
 6. **Copy image:** `navigator.clipboard.write([new ClipboardItem({"image/png": …})])` inside the click handler. Images only.
 7. On dismiss, send `synthid:clear`.
