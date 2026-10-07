@@ -15,5 +15,8 @@
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.1.1",
     "web-ext": "^10.7.0"
+  },
+  "overrides": {
+    "shell-quote": "^1.12.0"
   }
 }
