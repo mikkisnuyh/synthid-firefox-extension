@@ -10,7 +10,7 @@ When you initiate a SynthID check, the media file you selected is downloaded fro
 
 ## Drop zone
 
-With the drop zone setting on (the default), a small script runs on every page you open, only to notice when you start dragging an image. It reads nothing from the page and sends nothing anywhere unless you drop an image on the drop zone, which starts a check as described above. You can turn it off in the extension's settings.
+With the drop zone setting on (the default), a small script runs on every page you open, only to notice when you start dragging an image. It reads nothing from the page and sends nothing anywhere unless you drop an image on the drop zone, which starts a check as described above. You can turn it off in the settings in the toolbar menu.
 
 ## Settings storage
 

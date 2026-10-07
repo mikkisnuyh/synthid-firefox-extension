@@ -4,10 +4,10 @@ Drag an image onto the drop box, or right-click an image, video, or audio elemen
 
 ## How to use
 
-- **Drag and drop:** Drag an image on a page. A box "Drop here to check with SynthID" appears in the top-right corner by default (the other corner on the same side if you start dragging from there). Drop the image on it to start the check. The box goes away when the drag ends. You can choose the corner, or turn this off with "Show a drop zone when you drag an image", in the settings. A new corner applies right away; turning it on or off applies to pages you open or reload afterwards.
+- **Drag and drop:** Drag an image on a page. A box "Drop here to check with SynthID" appears in the top-right corner by default (the other corner on the same side if you start dragging from there). Drop the image on it to start the check. The box goes away when the drag ends. You can choose the corner, or turn this off with "Show a drop zone when you drag an image", in the toolbar menu's settings. A new corner applies right away; turning it on or off applies to pages you open or reload afterwards.
 - **Context menu:** Right-click an image, video, or audio element and select "Check with SynthID". If the site covers the media with an overlay, use "Find media under the cursor and check with SynthID" from the page or frame context menu.
-- **Toolbar menu:** Click the extension icon to open its menu. It lists the ways to check (drag, right-click, pick). Choose **Pick media on this page** to pick: media is highlighted as you move the cursor; click the one you want to check, or press Esc to cancel. The menu also links to synthid.com and the settings.
-- **Keyboard shortcut:** Press Alt+Shift+S to start pick mode directly, without the menu. You can change it, or add a shortcut that opens the menu, in SynthID Check's settings.
+- **Toolbar menu:** Click the extension icon to open its menu. It lists the ways to check (drag, right-click, pick). Choose **Pick media on this page** to pick: media is highlighted as you move the cursor; click the one you want to check, or press Esc to cancel. The menu also links to synthid.com and to its settings: **Settings** turns the menu into a settings view, with a **Back** button (Esc also goes back).
+- **Keyboard shortcut:** Press Alt+Shift+S to start pick mode directly, without the menu. You can change it, or add a shortcut that opens the menu, in the settings in the toolbar menu.
 
 ## What it can and can't detect
 
@@ -23,7 +23,7 @@ SynthID is Google DeepMind's invisible watermark. Google's AI products embed it,
 
 ## Website access
 
-Firefox asks for access to all websites when you install the extension, and that's the only permission prompt. You can turn it off later in about:addons → SynthID Check → Permissions; that is Firefox's own control. Checks then can't download files from other sites, and the extension tells you so, with an **Open settings** button. To turn it back on, use the button in the extension's settings. The settings open in their own tab, from the **Settings** link in the toolbar menu.
+Firefox asks for access to all websites when you install the extension, and that's the only permission prompt. You can turn it off later in about:addons → SynthID Check → Permissions; that is Firefox's own control. Checks then can't download files from other sites, and the extension tells you so: "Turn it back on in its settings: click the SynthID Check button in the toolbar, then Settings." There, under Website access, **Allow access to all websites** turns it back on. (Firefox only lets an extension open its toolbar menu from a click, so the notice can't open it for you.) Turning access off stays in about:addons.
 
 ## Requirements
 
