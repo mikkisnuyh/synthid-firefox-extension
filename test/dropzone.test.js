@@ -24,14 +24,32 @@ afterEach(() => {
   dom = null;
 });
 
-function setup(html = "", { width = 1024, height = 768, load = true } = {}) {
+// A mock storage API: sync.get applies defaults over `store`; onChanged keeps its listeners.
+function makeStorage(store = {}) {
+  const storage = {
+    store,
+    gets: [],
+    listeners: [],
+    sync: {
+      get: async (defaults) => {
+        storage.gets.push(defaults);
+        return { ...defaults, ...storage.store };
+      },
+    },
+    onChanged: { addListener: (fn) => storage.listeners.push(fn) },
+    change: (changes, area = "sync") => storage.listeners.forEach((fn) => fn(changes, area)),
+  };
+  return storage;
+}
+
+function setup(html = "", { width = 1024, height = 768, load = true, storage = makeStorage() } = {}) {
   dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, {
     url: "https://example.com/dir/page.html",
     runScripts: "outside-only",
   });
   const w = dom.window;
   messages = [];
-  w.browser = { runtime: { sendMessage: (m) => (messages.push(m), Promise.resolve()) } };
+  w.browser = { runtime: { sendMessage: (m) => (messages.push(m), Promise.resolve()) }, storage };
   Object.defineProperty(w, "innerWidth", { value: width, configurable: true });
   Object.defineProperty(w, "innerHeight", { value: height, configurable: true });
   w.eval(RESOLVE_SRC);
@@ -549,4 +567,177 @@ test("subframe without IntersectionObserver falls back to the viewport size", as
   const w = setupFrame({ rect: rect(0, 0, 0, 0), noObserver: true });
   await startImageDrag(w);
   assert.ok(hostEl(w));
+});
+
+// --- Corner setting (placement itself isn't observable; only the storage traffic is)
+
+test("the corner setting is read lazily, once, with the top-right default", async () => {
+  const storage = makeStorage();
+  const w = setup(IMG, { storage });
+  assert.equal(storage.gets.length, 0, "nothing read at load");
+  await startImageDrag(w);
+  await startImageDrag(w);
+  assert.deepEqual(JSON.parse(JSON.stringify(storage.gets)), [{ dropZoneCorner: "top-right" }]);
+  assert.ok(hostEl(w));
+});
+
+test("a non-image drag does not read the corner setting", async () => {
+  const storage = makeStorage();
+  const w = setup('<p id="p">x</p>', { storage });
+  fire(w, w.document.getElementById("p"), "dragstart", { types: ["text/plain"] });
+  await tick();
+  assert.equal(storage.gets.length, 0);
+});
+
+test("storage.onChanged for dropZoneCorner makes the next drag re-read it", async () => {
+  const storage = makeStorage();
+  const w = setup(IMG, { storage });
+  await startImageDrag(w);
+  assert.equal(storage.gets.length, 1);
+  storage.change({ openInForeground: { newValue: false } });
+  storage.change({ dropZoneCorner: { newValue: "bottom-left" } }, "local");
+  await startImageDrag(w);
+  assert.equal(storage.gets.length, 1, "unrelated changes keep the cache");
+  storage.store.dropZoneCorner = "bottom-left";
+  storage.change({ dropZoneCorner: { newValue: "bottom-left" } });
+  await startImageDrag(w);
+  assert.equal(storage.gets.length, 2);
+  assert.ok(hostEl(w));
+});
+
+test("invalid corner values, a rejecting get and a missing or throwing storage API still show the zone", async () => {
+  let storage = makeStorage({ dropZoneCorner: "middle" });
+  let w = setup(IMG, { storage });
+  await startImageDrag(w);
+  assert.ok(hostEl(w), "invalid value");
+  w.close();
+
+  storage = makeStorage();
+  storage.sync.get = () => Promise.reject(new Error("denied"));
+  w = setup(IMG, { storage });
+  await startImageDrag(w);
+  assert.ok(hostEl(w), "rejecting get");
+  w.close();
+
+  storage = makeStorage();
+  storage.sync.get = () => {
+    throw new Error("sync");
+  };
+  w = setup(IMG, { storage });
+  await startImageDrag(w);
+  assert.ok(hostEl(w), "throwing get");
+  w.close();
+
+  w = setup(IMG, { storage: undefined });
+  delete w.browser.storage;
+  await startImageDrag(w);
+  assert.ok(hostEl(w), "missing storage (set up after load, read lazily)");
+  w.close();
+
+  w = setup(IMG, { load: false });
+  delete w.browser.storage;
+  w.eval(DROPZONE_SRC);
+  await startImageDrag(w);
+  assert.ok(hostEl(w), "storage missing at load");
+});
+
+// --- Link detection
+
+test("a text link containing an image, dragged by its text, shows nothing", async () => {
+  const w = setup('<a id="a" href="https://example.com/x">Some text <img id="img" src="https://example.com/cat.png"></a>');
+  w.document.elementsFromPoint = () => [w.document.getElementById("a"), w.document.body];
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.equal(hostEl(w), null);
+});
+
+test("a link with the image under the point shows the zone without the native type", async () => {
+  const w = setup('<a id="a" href="https://example.com/x">Some text <img id="img" src="https://example.com/cat.png"></a>');
+  w.document.elementsFromPoint = () => [w.document.getElementById("img"), w.document.getElementById("a"), w.document.body];
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.ok(hostEl(w));
+});
+
+test("an image under the point but outside the dragged link shows nothing without the native type", async () => {
+  const w = setup('<a id="a" href="https://example.com/x">text</a><img id="img" src="https://example.com/cat.png">');
+  w.document.elementsFromPoint = () => [w.document.getElementById("img"), w.document.body];
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.equal(hostEl(w), null);
+});
+
+test("a link that is just one image shows the zone even with nothing under the point", async () => {
+  const w = setup('<a id="a" href="https://example.com/x"> <img id="img" src="https://example.com/logo.png"> </a>');
+  w.document.elementsFromPoint = () => [];
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.ok(hostEl(w));
+  arm(w);
+  fire(w, hostEl(w), "drop");
+  assert.equal(messages[0].media.url, "https://example.com/logo.png");
+});
+
+test("a link with one image and text shows the zone only with the native type", async () => {
+  const html = '<a id="a" href="https://example.com/x">words <img id="img" src="https://example.com/logo.png"></a>';
+  let w = setup(html);
+  w.document.elementsFromPoint = () => [];
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.equal(hostEl(w), null);
+  w.close();
+
+  w = setup(html);
+  w.document.elementsFromPoint = () => [];
+  fire(w, w.document.getElementById("a"), "dragstart", { types: [NATIVE_IMAGE], clientX: 5, clientY: 5 });
+  await tick();
+  assert.ok(hostEl(w));
+});
+
+test("a text-less link with two images and nothing under the point shows nothing", async () => {
+  const w = setup('<a id="a" href="https://example.com/x"><img src="https://example.com/1.png"><img src="https://example.com/2.png"></a>');
+  w.document.elementsFromPoint = () => [];
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.equal(hostEl(w), null);
+});
+
+test("a CSS background image under the point shows nothing without the native type", async () => {
+  const w = setup('<a id="a" href="https://example.com/x" style="background-image:url(https://example.com/bg.png)">text</a>');
+  w.document.elementsFromPoint = () => [w.document.getElementById("a"), w.document.body];
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 5, clientY: 5 });
+  await tick();
+  assert.equal(hostEl(w), null);
+});
+
+test("with clientX/clientY both 0, the last trusted mousedown point is used", async () => {
+  const w = setup('<a id="a" href="https://example.com/x">text <img id="img" src="https://example.com/cat.png"></a>');
+  const asked = [];
+  w.document.elementsFromPoint = (x, y) => {
+    asked.push([x, y]);
+    return [w.document.getElementById("img"), w.document.getElementById("a")];
+  };
+  fire(w, w.document.body, "mousedown", { buttons: 1, clientX: 70, clientY: 80, isTrusted: false });
+  fire(w, w.document.body, "mousedown", { buttons: 1, clientX: 20, clientY: 30 });
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 0, clientY: 0 });
+  await tick();
+  assert.ok(hostEl(w));
+  assert.deepEqual(asked[0], [20, 30]);
+
+  // Non-zero coordinates win over the mousedown point.
+  w.SynthIDDropZone.hide();
+  asked.length = 0;
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 0, clientY: 9 });
+  await tick();
+  assert.deepEqual(asked[0], [0, 9]);
+});
+
+test("with clientX/clientY 0 and no mousedown, the point is (0, 0)", async () => {
+  const w = setup('<a id="a" href="https://example.com/x">text <img id="img" src="https://example.com/cat.png"></a>');
+  const asked = [];
+  w.document.elementsFromPoint = (x, y) => (asked.push([x, y]), []);
+  fire(w, w.document.getElementById("a"), "dragstart", { types: ["text/uri-list"], clientX: 0, clientY: 0 });
+  await tick();
+  assert.deepEqual(asked[0], [0, 0]);
+  assert.equal(hostEl(w), null);
 });

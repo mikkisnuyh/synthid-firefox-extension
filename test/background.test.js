@@ -34,6 +34,7 @@ const ALL_SITES_REQUEST = { origins: [ALL_URLS] };
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8, 250, 251]);
 const CDN_PNG = "https://cdn.example.com/img/cat.png";
 const PAGE_URL = "https://example.com/page";
+const OPEN_SETTINGS_ACTIONS = [{ id: "open-settings", label: "Open settings", primary: true }];
 
 // ---------------------------------------------------------------------------
 // Mock browser
@@ -154,6 +155,10 @@ function makeEnv(opts = {}) {
       onInstalled: events.onInstalled,
       onStartup: events.onStartup,
       onMessage: events.onMessage,
+      openOptionsPage: async () => {
+        calls.openOptionsPage = (calls.openOptionsPage || 0) + 1;
+        if (env.openOptionsError) throw env.openOptionsError;
+      },
     },
     menus: {
       removeAll: async () => {
@@ -575,9 +580,9 @@ test("access revoked and declined: a cross-origin image gets the access notice, 
   assert.equal(notice.args[0].state, "warn");
   assert.equal(
     notice.args[0].message,
-    "SynthID Check needs access to websites to download this file. " +
-      "Allow it in the extension's settings (about:addons → SynthID Check → Permissions).",
+    "SynthID Check needs access to websites to download this file. Turn it back on in SynthID Check's settings.",
   );
+  assert.deepEqual(notice.args[0].actions, OPEN_SETTINGS_ACTIONS);
   assert.equal(env.calls.fetch.length, 0);
   assert.equal(env.calls.tabsCreate.length, 0, "no synthid.com tab and no grant page");
   assert.equal(env.calls.permissionsRequest.length, 1, "no second request outside the click");
@@ -771,7 +776,13 @@ test("without synthid.com host access nothing is opened and the user is told", a
   const tab = env.addTab(sourceTab());
   env.click(imageClick("https://example.com/a.png"), tab);
   await waitFor(() => bannerCalls(env, 5).length === 1, "access notice");
-  assert.match(bannerCalls(env, 5)[0].args[0].message, /needs access to synthid\.com/);
+  const notice = bannerCalls(env, 5)[0].args[0];
+  assert.equal(
+    notice.message,
+    "SynthID Check needs access to synthid.com to attach the file. Turn it back on in SynthID Check's settings.",
+  );
+  assert.equal(notice.state, "warn");
+  assert.deepEqual(notice.actions, OPEN_SETTINGS_ACTIONS);
   assert.equal(env.calls.tabsCreate.length, 0);
 });
 
@@ -1561,4 +1572,31 @@ test("synthid:syncDropZone from any other sender is refused and changes nothing"
   await tick();
   assert.equal(env.registeredScripts.size, 0);
   assert.deepEqual(env.scriptingLog.filter((x) => x !== "get"), []);
+});
+
+test("other notices carry no actions", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  env.fetchHandler = async () => new Response("x", { status: 500 });
+  env.click(imageClick(CDN_PNG), tab);
+  await waitFor(() => bannerCalls(env, 5).length === 1, "notice");
+  assert.deepEqual(bannerCalls(env, 5)[0].args[0].actions, []);
+});
+
+test("synthid:openSettings opens the options page and replies ok", async () => {
+  const env = await loadBackground();
+  const tab = env.addTab(sourceTab());
+  assert.deepEqual(await env.send({ type: "synthid:openSettings" }, { id: EXT_ID, url: PAGE_URL, tab, frameId: 0 }), { ok: true });
+  assert.equal(env.calls.openOptionsPage, 1);
+});
+
+test("synthid:openSettings replies not ok when openOptionsPage rejects", async () => {
+  const env = await loadBackground();
+  env.openOptionsError = new Error("nope");
+  assert.deepEqual(await env.send({ type: "synthid:openSettings" }, { id: EXT_ID, url: PAGE_URL }), { ok: false });
+  assert.equal(env.calls.openOptionsPage, 1);
+});
+
+test("manifest opens the options page in a tab", () => {
+  assert.deepEqual(MANIFEST.options_ui, { page: "src/options/options.html", open_in_tab: true });
 });
