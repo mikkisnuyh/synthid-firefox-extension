@@ -6,6 +6,7 @@
   "license": "MIT",
   "scripts": {
     "lint": "web-ext lint",
+    "test:live": "node scripts/test-synthid-live.js",
     "test": "node --test \"test/*.test.js\"",
     "build": "web-ext build --overwrite-dest",
     "start": "web-ext run"
