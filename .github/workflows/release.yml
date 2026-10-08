@@ -1,0 +1,64 @@
+name: Release
+
+# Push a tag matching the manifest version (e.g. v0.1.0) to publish a release.
+# Signing on addons.mozilla.org is optional: it runs only when the
+# AMO_JWT_ISSUER and AMO_JWT_SECRET secrets are set. The AMO_CHANNEL
+# repository variable picks the channel ("listed" by default, or "unlisted").
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+      AMO_CHANNEL: ${{ vars.AMO_CHANNEL || 'listed' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check the tag matches the extension version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(node -p 'require("./manifest.json").version')
+          pkg=$(node -p 'require("./package.json").version')
+          if [ "$tag" != "$manifest" ] || [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match manifest.json ($manifest) and package.json ($pkg)"
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+      - name: Sign on addons.mozilla.org
+        if: env.AMO_JWT_ISSUER != '' && env.AMO_JWT_SECRET != ''
+        run: |
+          args=(--channel "$AMO_CHANNEL" --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET")
+          # Listed versions go through AMO review; don't block the job on it.
+          if [ "$AMO_CHANNEL" = "listed" ]; then args+=(--approval-timeout 0); fi
+          npx web-ext sign "${args[@]}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag \
+            web-ext-artifacts/*.zip web-ext-artifacts/*.xpi
