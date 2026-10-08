@@ -71,6 +71,18 @@ To load the extension temporarily in Firefox:
 npm run build        # Create a production build
 ```
 
+## CI and releases
+
+GitHub Actions runs `npm run lint`, `npm test` (on Node 22 and 24) and `npm run build` on every pull request and push to `main`. The built zip is attached to each run as an artifact. `npm run test:live` isn't run in CI because it uses the live synthid.com.
+
+To release, bump `version` in both `manifest.json` and `package.json`, then push a matching tag:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The release workflow checks that the tag matches both versions, runs lint and tests, builds, and creates a GitHub release with the zip. If the repository has the `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` secrets (API credentials from addons.mozilla.org), it also submits the build to AMO for signing. The channel is `listed` by default; set the `AMO_CHANNEL` repository variable to `unlisted` to get a self-distributed signed `.xpi`, which is then attached to the release as well.
+
 ## Project structure
 
 This is a plain MV3 Firefox extension with no build step. Scripts use the `browser.*` promise API. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details on files, messaging flows, and how media detection and upload work.
